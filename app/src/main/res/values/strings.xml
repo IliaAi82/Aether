@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aether</string>
+    <string name="tagline">Freedom, in one tap</string>
+
+    <string name="advanced">Advanced settings</string>
+
+    <string name="protocol">Protocol</string>
+    <string name="protocol_auto">Auto</string>
+    <string name="protocol_masque">MASQUE</string>
+    <string name="protocol_wireguard">WireGuard</string>
+    <string name="protocol_gool">WARP×2</string>
+
+    <string name="scan_mode">Scan mode</string>
+    <string name="scan_turbo">Turbo</string>
+    <string name="scan_balanced">Balanced</string>
+    <string name="scan_thorough">Thorough</string>
+    <string name="scan_stealth">Stealth</string>
+
+    <string name="ip_version">IP version</string>
+    <string name="ip_v4">IPv4</string>
+    <string name="ip_v6">IPv6</string>
+    <string name="ip_both">Both</string>
+
+    <string name="quick_reconnect">Quick reconnect</string>
+    <string name="quick_reconnect_desc">Reconnect faster after a drop</string>
+    <string name="masque_http2">MASQUE over HTTP/2</string>
+    <string name="masque_http2_desc">Use HTTP/2 for the MASQUE transport</string>
+
+    <string name="state_idle">Disconnected</string>
+    <string name="state_launching">Starting engine…</string>
+    <string name="state_connecting">Connecting…</string>
+    <string name="state_connected">Connected</string>
+    <string name="state_reconnecting">Reconnecting…</string>
+    <string name="state_disconnecting">Disconnecting…</string>
+    <string name="state_error">Connection failed</string>
+
+    <string name="tap_to_connect">Tap to connect securely</string>
+    <string name="tap_to_disconnect">Tap to disconnect</string>
+    <string name="secure_via">Secure tunnel via %1$s</string>
+    <string name="reconnect_attempt">Attempt %1$d of %2$d</string>
+
+    <string name="notif_channel">VPN status</string>
+    <string name="notif_channel_desc">Shows the Aether connection status</string>
+    <string name="notif_title">Aether</string>
+
+    <string name="err_engine_timeout">The engine did not open the local proxy in time.</string>
+    <string name="err_engine_died">The engine stopped unexpectedly.</string>
+
+    <!-- Connection meta: IP + flag + timer -->
+    <string name="ip_your_label">Your IP</string>
+    <string name="ip_server_label">Server IP</string>
+    <string name="ip_checking">Checking IP…</string>
+    <string name="ip_unavailable">IP unavailable</string>
+    <string name="connected_for">Connected for</string>
+
+    <!-- Diagnostics panel -->
+    <string name="diag_title">Diagnostics &amp; logs</string>
+    <string name="diag_subtitle">Live status of every part of the tunnel</string>
+    <string name="diag_run">Run test</string>
+    <string name="diag_copy">Copy logs</string>
+    <string name="diag_clear">Clear</string>
+    <string name="diag_copied">Logs copied to clipboard</string>
+    <string name="diag_all_ok">All checks passed — traffic should flow</string>
+    <string name="diag_problem">A problem was detected — see the failing check</string>
+    <string name="diag_idle">Run the test to verify connectivity</string>
+    <string name="diag_empty_logs">No logs yet. Connect or run a test.</string>
+
+    <!-- About panel -->
+    <string name="about_title">About</string>
+    <string name="about_subtitle">Credits, links &amp; what this build adds</string>
+    <string name="about_version">Version %1$s</string>
+    <string name="about_original_title">Original project — Cluvex Studio</string>
+    <string name="about_original_note">The core engine powering this app</string>
+    <string name="about_port_title">Android edition — QW-AI-Code</string>
+    <string name="about_port_note">What we upgraded in this edition</string>
+    <string name="menu_open">Open menu</string>
+    <string name="traffic_download">Download</string>
+    <string name="traffic_upload">Upload</string>
+    <string name="traffic_total">Total %1$s</string>
+</resources>

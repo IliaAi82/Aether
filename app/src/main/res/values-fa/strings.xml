@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">اِتِر</string>
+    <string name="tagline">آزادی، در یک لمس</string>
+
+    <string name="advanced">تنظیمات پیشرفته</string>
+
+    <string name="protocol">پروتکل</string>
+    <string name="protocol_auto">خودکار</string>
+    <string name="protocol_masque">MASQUE</string>
+    <string name="protocol_wireguard">WireGuard</string>
+    <string name="protocol_gool">وارپ×۲</string>
+
+    <string name="scan_mode">حالت اسکن</string>
+    <string name="scan_turbo">توربو</string>
+    <string name="scan_balanced">متعادل</string>
+    <string name="scan_thorough">دقیق</string>
+    <string name="scan_stealth">مخفی</string>
+
+    <string name="ip_version">نسخه IP</string>
+    <string name="ip_v4">IPv4</string>
+    <string name="ip_v6">IPv6</string>
+    <string name="ip_both">هر دو</string>
+
+    <string name="quick_reconnect">اتصال مجدد سریع</string>
+    <string name="quick_reconnect_desc">بعد از قطعی، سریع‌تر وصل شو</string>
+    <string name="masque_http2">MASQUE روی HTTP/2</string>
+    <string name="masque_http2_desc">استفاده از HTTP/2 برای انتقال MASQUE</string>
+
+    <string name="state_idle">قطع شده</string>
+    <string name="state_launching">در حال راه‌اندازی هسته…</string>
+    <string name="state_connecting">در حال اتصال…</string>
+    <string name="state_connected">متصل</string>
+    <string name="state_reconnecting">در حال اتصال مجدد…</string>
+    <string name="state_disconnecting">در حال قطع…</string>
+    <string name="state_error">اتصال ناموفق بود</string>
+
+    <string name="tap_to_connect">برای اتصال امن لمس کنید</string>
+    <string name="tap_to_disconnect">برای قطع لمس کنید</string>
+    <string name="secure_via">تونل امن از طریق %1$s</string>
+    <string name="reconnect_attempt">تلاش %1$d از %2$d</string>
+
+    <string name="notif_channel">وضعیت VPN</string>
+    <string name="notif_channel_desc">وضعیت اتصال اِتِر را نشان می‌دهد</string>
+    <string name="notif_title">اِتِر</string>
+
+    <string name="err_engine_timeout">هسته نتوانست پراکسی محلی را به‌موقع باز کند.</string>
+    <string name="err_engine_died">هسته به‌طور غیرمنتظره متوقف شد.</string>
+
+    <!-- Connection meta: IP + flag + timer -->
+    <string name="ip_your_label">آی‌پی شما</string>
+    <string name="ip_server_label">آی‌پی سرور</string>
+    <string name="ip_checking">در حال بررسی آی‌پی…</string>
+    <string name="ip_unavailable">آی‌پی در دسترس نیست</string>
+    <string name="connected_for">مدت اتصال</string>
+
+    <!-- Diagnostics panel -->
+    <string name="diag_title">عیب‌یابی و لاگ‌ها</string>
+    <string name="diag_subtitle">وضعیت زنده‌ی همه‌ی بخش‌های تونل</string>
+    <string name="diag_run">اجرای تست</string>
+    <string name="diag_copy">کپی لاگ‌ها</string>
+    <string name="diag_clear">پاک کردن</string>
+    <string name="diag_copied">لاگ‌ها در کلیپ‌بورد کپی شد</string>
+    <string name="diag_all_ok">همه‌ی بررسی‌ها موفق بود — ترافیک باید برقرار باشد</string>
+    <string name="diag_problem">مشکلی شناسایی شد — بررسی ناموفق را ببینید</string>
+    <string name="diag_idle">برای بررسی اتصال، تست را اجرا کنید</string>
+    <string name="diag_empty_logs">هنوز لاگی نیست. متصل شوید یا تست را اجرا کنید.</string>
+
+    <!-- About panel -->
+    <string name="about_title">درباره</string>
+    <string name="about_subtitle">سازندگان، لینک‌ها و تغییرات این نسخه</string>
+    <string name="about_version">نسخه %1$s</string>
+    <string name="about_original_title">پروژه اصلی — Cluvex Studio</string>
+    <string name="about_original_note">هسته‌ی اصلی که این برنامه از آن قدرت می‌گیرد</string>
+    <string name="about_port_title">نسخه اندروید — QW-AI-Code</string>
+    <string name="about_port_note">مواردی که در این نسخه ارتقا داده‌ایم</string>
+    <string name="menu_open">باز کردن منو</string>
+    <string name="traffic_download">دانلود</string>
+    <string name="traffic_upload">آپلود</string>
+    <string name="traffic_total">مجموع %1$s</string>
+</resources>
