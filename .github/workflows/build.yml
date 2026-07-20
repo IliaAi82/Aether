@@ -1,0 +1,115 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: "26.3.11579264"
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          yes | sdkmanager "ndk;${NDK_VERSION}" > /dev/null
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # quiche (used by Aether) builds BoringSSL, which needs Go + cmake.
+      # ubuntu-latest ships both, but pin Go explicitly to be safe.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Set up Rust (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Fetch native sources
+        run: bash scripts/fetch-natives.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build tunnel core (hev)
+        run: bash scripts/build-natives.sh hev
+
+      - name: Build engine (Aether)
+        run: bash scripts/build-natives.sh aether
+
+      - name: Decode release keystore
+        if: ${{ env.KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+          echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build release APKs
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Collect and rename APKs
+        run: |
+          VERSION_NAME="$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
+          OUT=artifacts
+          mkdir -p "$OUT"
+          declare -A MAP=(
+            ["arm64-v8a"]="arm64-v8a"
+            ["armeabi-v7a"]="armeabi-v7a"
+            ["universal"]="universal"
+          )
+          for key in "${!MAP[@]}"; do
+            src="$(find app/build/outputs/apk/release -iname "*${key}*.apk" | head -n1)"
+            if [ -n "$src" ]; then
+              cp "$src" "${OUT}/Aether-${VERSION_NAME}-${MAP[$key]}.apk"
+            fi
+          done
+          echo "Built APKs:"
+          ls -la "$OUT"
+
+      # GitHub always zips workflow "artifacts", so we skip them entirely and
+      # publish a Release on EVERY successful build instead: each APK shows up
+      # as its own downloadable asset on the Releases page, so users grab only
+      # the variant they need.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', env.VERSION_NAME, github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Aether v{0} (build {1})', env.VERSION_NAME, github.run_number) }}
+          files: artifacts/*.apk
+          make_latest: true
+          body: |
+            ## Downloads
+            | File | Device |
+            | --- | --- |
+            | `*-arm64-v8a.apk` | Most modern phones (recommended) |
+            | `*-armeabi-v7a.apk` | Older 32-bit devices |
+            | `*-universal.apk` | Works on both (larger file) |
