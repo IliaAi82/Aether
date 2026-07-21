@@ -7,22 +7,31 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -44,6 +53,7 @@ import studio.cluvex.aether.ui.components.DiagnosticsPanel
 import studio.cluvex.aether.ui.components.StatusLine
 import studio.cluvex.aether.ui.components.TrafficPanel
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     state: ConnectionState,
@@ -70,6 +80,11 @@ fun HomeScreen(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
+
+    // Advanced settings, reachable directly from the home screen (top-right).
+    var showAdvancedSheet by remember { mutableStateOf(false) }
+    val advancedSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val settingsEnabled = state is ConnectionState.Idle || state is ConnectionState.Error
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -102,10 +117,18 @@ fun HomeScreen(
 
                     Spacer(Modifier.height(16.dp))
 
+                    SharePanel(
+                        state = state,
+                        profile = profile,
+                        onProfileChange = onProfileChange,
+                    )
+
+                    Spacer(Modifier.height(16.dp))
+
                     AdvancedPanel(
                         profile = profile,
                         onProfileChange = onProfileChange,
-                        enabled = state is ConnectionState.Idle || state is ConnectionState.Error,
+                        enabled = settingsEnabled,
                     )
 
                     Spacer(Modifier.height(16.dp))
@@ -177,6 +200,43 @@ fun HomeScreen(
                     imageVector = Icons.Rounded.Menu,
                     contentDescription = stringResource(R.string.menu_open),
                     tint = MaterialTheme.colorScheme.onBackground,
+                )
+            }
+
+            // Advanced settings straight from the home screen.
+            IconButton(
+                onClick = { showAdvancedSheet = true },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Tune,
+                    contentDescription = stringResource(R.string.advanced_open),
+                    tint = MaterialTheme.colorScheme.onBackground,
+                )
+            }
+        }
+    }
+
+    if (showAdvancedSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAdvancedSheet = false },
+            sheetState = advancedSheetState,
+            containerColor = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 16.dp)
+                    .navigationBarsPadding()
+                    .padding(bottom = 16.dp),
+            ) {
+                AdvancedPanel(
+                    profile = profile,
+                    onProfileChange = onProfileChange,
+                    enabled = settingsEnabled,
+                    startExpanded = true,
                 )
             }
         }

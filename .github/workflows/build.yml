@@ -14,10 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NDK_VERSION: "26.3.11579264"
-      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
     steps:
       - name: Checkout
@@ -37,8 +33,6 @@ jobs:
           yes | sdkmanager "ndk;${NDK_VERSION}" > /dev/null
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
 
-      # quiche (used by Aether) builds BoringSSL, which needs Go + cmake.
-      # ubuntu-latest ships both, but pin Go explicitly to be safe.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -66,11 +60,64 @@ jobs:
       - name: Build engine (Aether)
         run: bash scripts/build-natives.sh aether
 
-      - name: Decode release keystore
-        if: ${{ env.KEYSTORE_BASE64 != '' }}
+      # Signing: ALWAYS sign with a STABLE key so users can update in place
+      # (Android only installs an update when old and new APKs share the same
+      # signature). Priority:
+      #   1. Your own keystore from repo Secrets (recommended for real releases).
+      #   2. A CI keystore persisted in the repo (.github/ci-keystore.jks.b64):
+      #      generated ONCE on the first build and committed back automatically,
+      #      so every later build reuses the exact same key. Without this, each
+      #      build used a fresh debug key and users had to uninstall on every
+      #      update.
+      # NOTE: the repo-persisted CI keystore is public by definition. It solves
+      # updatability, not authenticity - set the Secrets for real distribution.
+      - name: Prepare signing keystore (stable across builds)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
-          echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore" >> "$GITHUB_ENV"
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "Using the user-provided keystore from repository Secrets."
+            echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+            {
+              echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore"
+              echo "KEYSTORE_PASSWORD=${SECRET_KEYSTORE_PASSWORD}"
+              echo "KEY_ALIAS=${SECRET_KEY_ALIAS}"
+              echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD}"
+            } >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          KS="${RUNNER_TEMP}/ci-release.keystore"
+          if [ -f .github/ci-keystore.jks.b64 ]; then
+            echo "Reusing the persisted CI keystore (same signature as previous builds)."
+            base64 -d .github/ci-keystore.jks.b64 > "$KS"
+          else
+            echo "First build: generating a CI keystore and persisting it to the repo."
+            keytool -genkeypair -v -keystore "$KS" \
+              -storepass aether-ci-keystore -keypass aether-ci-keystore \
+              -alias aether-ci -keyalg RSA -keysize 2048 -validity 10950 \
+              -dname "CN=Aether Mobile CI, OU=AetherMobile, O=QW-AI-Code"
+            base64 -w0 "$KS" > .github/ci-keystore.jks.b64
+            if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add .github/ci-keystore.jks.b64
+              git commit -m "ci: persist auto-generated signing keystore [skip ci]"
+              git push origin "HEAD:${GITHUB_REF_NAME}" \
+                || echo "WARNING: could not push the keystore back; the next build may sign with a different key."
+            else
+              echo "WARNING: tag build without a persisted keystore - push to a branch first so the keystore gets committed."
+            fi
+          fi
+          {
+            echo "KEYSTORE_PATH=$KS"
+            echo "KEYSTORE_PASSWORD=aether-ci-keystore"
+            echo "KEY_ALIAS=aether-ci"
+            echo "KEY_PASSWORD=aether-ci-keystore"
+          } >> "$GITHUB_ENV"
 
       - name: Build release APKs
         run: gradle :app:assembleRelease --no-daemon --stacktrace
@@ -95,21 +142,16 @@ jobs:
           echo "Built APKs:"
           ls -la "$OUT"
 
-      # GitHub always zips workflow "artifacts", so we skip them entirely and
-      # publish a Release on EVERY successful build instead: each APK shows up
-      # as its own downloadable asset on the Releases page, so users grab only
-      # the variant they need.
+      # Publish a Release on every successful build: each APK shows up as its
+      # own downloadable asset. The release TITLE is just "Aether vX.Y.Z"
+      # (no "(build N)" suffix); the tag still embeds the run number so every
+      # build gets a unique tag. The "What's new" body comes from
+      # .github/release-notes.md - update that file whenever the version changes.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build.{1}', env.VERSION_NAME, github.run_number) }}
-          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Aether v{0} (build {1})', env.VERSION_NAME, github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && format('Aether {0}', github.ref_name) || format('Aether v{0}', env.VERSION_NAME) }}
           files: artifacts/*.apk
           make_latest: true
-          body: |
-            ## Downloads
-            | File | Device |
-            | --- | --- |
-            | `*-arm64-v8a.apk` | Most modern phones (recommended) |
-            | `*-armeabi-v7a.apk` | Older 32-bit devices |
-            | `*-universal.apk` | Works on both (larger file) |
+          body_path: .github/release-notes.md

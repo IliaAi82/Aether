@@ -20,6 +20,12 @@ data class ConnectionProfile(
     val ipVersion: IpVersion = IpVersion.V4,
     val quickReconnect: Boolean = true,
     val masqueHttp2: Boolean = false,
+    /**
+     * Share the tunnel with other devices on the same Wi-Fi / hotspot via the
+     * in-app proxy bridge (see [studio.cluvex.aether.core.ShareBridge]).
+     * UI-side option only — it never reaches the engine's CLI args.
+     */
+    val lanShare: Boolean = false,
 ) {
     /** Command-line arguments passed to the `aether` engine binary. */
     fun toArgs(): List<String> {

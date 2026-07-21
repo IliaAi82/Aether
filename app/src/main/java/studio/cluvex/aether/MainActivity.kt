@@ -55,6 +55,19 @@ class MainActivity : ComponentActivity() {
 
         maybeRequestNotificationPermission()
 
+        // Launched from the Quick Settings tile while VPN consent was still
+        // missing: run the normal connect flow, which shows the system's VPN
+        // consent dialog and then connects.
+        if (intent?.getBooleanExtra(EXTRA_CONNECT_ON_LAUNCH, false) == true) {
+            intent.removeExtra(EXTRA_CONNECT_ON_LAUNCH)
+            lifecycleScope.launch {
+                val current = AetherController.state.value
+                if (!current.isConnected && !current.isBusy) {
+                    toggleConnection(current)
+                }
+            }
+        }
+
         setContent {
             AetherTheme {
                 val state by AetherController.state.collectAsState()
@@ -161,5 +174,10 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    companion object {
+        /** Set by the Quick Settings tile when it needs the consent dialog. */
+        const val EXTRA_CONNECT_ON_LAUNCH = "studio.cluvex.aether.CONNECT_ON_LAUNCH"
     }
 }

@@ -62,6 +62,9 @@ private val PORT_IMPROVEMENTS = listOf(
     "Step-by-step connectivity self-test with crash-persistent diagnostic logs",
     "Automatic reconnect with backoff and per-scan-mode connect timeouts",
     "Protocol, scan-mode and IP-version controls in a Material 3 UI (English + فارسی)",
+    "Quick Settings tile — connect/disconnect straight from the notification shade",
+    "Share the VPN over Wi‑Fi/hotspot — built-in HTTP + SOCKS5 proxy for laptops & other phones",
+    "Advanced settings reachable right from the home screen",
     "Signed per-ABI release APKs published automatically from GitHub Actions",
 )
 
@@ -78,7 +81,7 @@ fun AboutPanel(modifier: Modifier = Modifier) {
     val versionName = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull() ?: "1.0.0"
+        }.getOrNull() ?: "1.1.0"
     }
 
     Card(

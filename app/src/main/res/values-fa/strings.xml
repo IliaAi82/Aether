@@ -75,6 +75,26 @@
     <string name="about_port_title">نسخه اندروید — QW-AI-Code</string>
     <string name="about_port_note">مواردی که در این نسخه ارتقا داده‌ایم</string>
     <string name="menu_open">باز کردن منو</string>
+    <string name="advanced_open">باز کردن تنظیمات پیشرفته</string>
+
+    <!-- Quick Settings tile -->
+    <string name="qs_tile_label">اِتِر</string>
+
+    <!-- Share VPN panel -->
+    <string name="share_title">اشتراک‌گذاری VPN</string>
+    <string name="share_subtitle">استفاده از این گوشی به‌عنوان پراکسی برای لپ‌تاپ یا گوشی دیگر</string>
+    <string name="share_toggle">اشتراک‌گذاری در این شبکه</string>
+    <string name="share_toggle_desc">یک پراکسی محلی باز می‌کند که دستگاه‌های روی همین وای‌فای یا هات‌اسپات می‌توانند استفاده کنند</string>
+    <string name="share_http_label">پراکسی HTTP — در تنظیمات پراکسی سیستم وارد کنید</string>
+    <string name="share_socks_label">پراکسی SOCKS5 — برای برنامه‌هایی که SOCKS پشتیبانی می‌کنند</string>
+    <string name="share_copy">کپی آدرس</string>
+    <string name="share_copied">آدرس کپی شد</string>
+    <string name="share_need_connect">اول VPN را وصل کنید — اشتراک‌گذاری، دستگاه‌های دیگر را از طریق تونل همین گوشی عبور می‌دهد.</string>
+    <string name="share_starting">در حال راه‌اندازی اشتراک‌گذاری… اگر بیش از چند ثانیه طول کشید، سوییچ را خاموش و دوباره روشن کنید.</string>
+    <string name="share_need_wifi">برای اشتراک‌گذاری به وای‌فای وصل شوید یا هات‌اسپات را روشن کنید.</string>
+    <string name="share_howto">در دستگاه دیگر (روی همان شبکه)، تنظیمات پراکسی را باز کنید و یکی از این آدرس‌ها را وارد کنید:</string>
+    <string name="share_warning">تا وقتی اشتراک‌گذاری روشن است، هر کسی در این شبکه می‌تواند از پراکسی استفاده کند. فقط در شبکه‌های مطمئن استفاده کنید.</string>
+
     <string name="traffic_download">دانلود</string>
     <string name="traffic_upload">آپلود</string>
     <string name="traffic_total">مجموع %1$s</string>

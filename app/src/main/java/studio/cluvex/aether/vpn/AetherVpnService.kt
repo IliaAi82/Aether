@@ -23,6 +23,7 @@ import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.ProfileCodec
 import studio.cluvex.aether.core.HevTunnel
+import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
@@ -114,6 +115,10 @@ class AetherVpnService : VpnService() {
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
         updateNotification(getString(R.string.state_connected))
         DiagnosticsLog.i(TAG, "TUN + hev tunnel started. Running end-to-end self-test…")
+
+        // LAN sharing: if the user enabled it, expose the tunnel to other
+        // devices on the same Wi-Fi/hotspot (HTTP + SOCKS5 bridge).
+        if (profile.lanShare) ShareBridge.start()
 
         // Auto-run the connectivity self-test so the log panel immediately shows
         // whether traffic actually flows (and if not, exactly which stage fails).
@@ -235,12 +240,18 @@ class AetherVpnService : VpnService() {
         scope.launch {
             cleanupNativeOnly()
             AetherController.setState(ConnectionState.Idle)
+            AetherTileService.requestUpdate(this@AetherVpnService)
             stopForegroundCompat()
             stopSelf()
         }
     }
 
     private fun cleanupNativeOnly() {
+        // Stop sharing first: without the tunnel the bridge would leak direct.
+        try {
+            ShareBridge.stop()
+        } catch (_: Throwable) {
+        }
         if (tunnelStarted) {
             try {
                 HevTunnel.stop()
@@ -309,6 +320,8 @@ class AetherVpnService : VpnService() {
     private fun updateNotification(text: String) {
         val manager = getSystemService(android.app.NotificationManager::class.java)
         manager.notify(NOTIF_ID, buildNotification(text))
+        // Keep the Quick Settings tile in sync with every state transition.
+        AetherTileService.requestUpdate(this)
     }
 
     companion object {

@@ -17,8 +17,8 @@ android {
         applicationId = "studio.cluvex.aether"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         ndk {
             // We ship arm64 (primary) and arm builds.
@@ -98,11 +98,16 @@ android {
 }
 
 // Give every generated split APK a distinct, monotonic versionCode.
+// IMPORTANT: derived from defaultConfig.versionCode (versionCode * 1000 + ABI
+// offset) so each release's codes are strictly HIGHER than the previous
+// release's. Android only allows installing an update when the new
+// versionCode is greater — the old fixed base of 1000 froze the codes forever
+// and silently broke in-place updates.
 androidComponents {
     onVariants { variant ->
         variant.outputs.forEach { output ->
             val abiName = output.filters.find { it.filterType == ABI }?.identifier
-            val base = 1000
+            val base = (android.defaultConfig.versionCode ?: 1) * 1000
             val offset = abiCodes[abiName ?: "universal"] ?: 0
             output.versionCode.set(base + offset)
         }

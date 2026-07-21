@@ -100,6 +100,7 @@ object ProfileCodec {
         p.ipVersion.name,
         p.quickReconnect.toString(),
         p.masqueHttp2.toString(),
+        p.lanShare.toString(),
     ).joinToString("|")
 
     fun decode(raw: String?): ConnectionProfile {
@@ -113,6 +114,8 @@ object ProfileCodec {
                 ipVersion = IpVersion.valueOf(parts[2]),
                 quickReconnect = parts[3].toBoolean(),
                 masqueHttp2 = parts[4].toBoolean(),
+                // Added in 1.1.0 — tolerate older 5-field payloads.
+                lanShare = parts.getOrNull(5)?.toBoolean() ?: false,
             )
         }.getOrDefault(ConnectionProfile())
     }

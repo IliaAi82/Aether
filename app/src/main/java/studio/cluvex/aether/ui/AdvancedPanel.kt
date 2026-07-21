@@ -48,8 +48,11 @@ fun AdvancedPanel(
     onProfileChange: (ConnectionProfile) -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    // True when hosted in the home-screen bottom sheet, where the card should
+    // open already expanded instead of requiring an extra tap.
+    startExpanded: Boolean = false,
 ) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(startExpanded) }
     val arrowRotation by animateFloatAsState(if (expanded) 180f else 0f, tween(300), label = "arrow")
 
     Card(

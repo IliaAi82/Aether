@@ -22,6 +22,7 @@ class ProfileStore(private val context: Context) {
         val ip = stringPreferencesKey("ip")
         val quick = booleanPreferencesKey("quick")
         val h2 = booleanPreferencesKey("h2")
+        val share = booleanPreferencesKey("share")
     }
 
     val profile: Flow<ConnectionProfile> = context.dataStore.data.map { prefs ->
@@ -34,6 +35,7 @@ class ProfileStore(private val context: Context) {
                 ?.let { runCatching { IpVersion.valueOf(it) }.getOrNull() } ?: IpVersion.V4,
             quickReconnect = prefs[Keys.quick] ?: true,
             masqueHttp2 = prefs[Keys.h2] ?: false,
+            lanShare = prefs[Keys.share] ?: false,
         )
     }
 
@@ -44,6 +46,7 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.ip] = profile.ipVersion.name
             prefs[Keys.quick] = profile.quickReconnect
             prefs[Keys.h2] = profile.masqueHttp2
+            prefs[Keys.share] = profile.lanShare
         }
     }
 }

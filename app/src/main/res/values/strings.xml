@@ -75,6 +75,26 @@
     <string name="about_port_title">Android edition — QW-AI-Code</string>
     <string name="about_port_note">What we upgraded in this edition</string>
     <string name="menu_open">Open menu</string>
+    <string name="advanced_open">Open advanced settings</string>
+
+    <!-- Quick Settings tile -->
+    <string name="qs_tile_label">Aether</string>
+
+    <!-- Share VPN panel -->
+    <string name="share_title">Share VPN</string>
+    <string name="share_subtitle">Use this phone as a proxy for your laptop or another phone</string>
+    <string name="share_toggle">Share on this network</string>
+    <string name="share_toggle_desc">Opens a local proxy that devices on the same Wi‑Fi or hotspot can use</string>
+    <string name="share_http_label">HTTP proxy — enter in system proxy settings</string>
+    <string name="share_socks_label">SOCKS5 proxy — for apps that support SOCKS</string>
+    <string name="share_copy">Copy address</string>
+    <string name="share_copied">Address copied</string>
+    <string name="share_need_connect">Connect the VPN first — sharing routes other devices through this phone’s tunnel.</string>
+    <string name="share_starting">Starting sharing… if this takes more than a few seconds, toggle the switch off and on again.</string>
+    <string name="share_need_wifi">Join a Wi‑Fi network or turn on your hotspot to share.</string>
+    <string name="share_howto">On the other device (same network), open its proxy settings and enter one of these addresses:</string>
+    <string name="share_warning">While sharing is on, anyone on this network can use the proxy. Use only on trusted networks.</string>
+
     <string name="traffic_download">Download</string>
     <string name="traffic_upload">Upload</string>
     <string name="traffic_total">Total %1$s</string>
