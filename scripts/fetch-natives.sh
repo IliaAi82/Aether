@@ -29,6 +29,14 @@ AETHER_REPO="${AETHER_REPO:-CluvexStudio/Aether}"
 AETHER_REF="${AETHER_REF:-}"      # empty => default branch
 AETHER_SRC="${NATIVE_DIR}/aether"
 
+# The engine source is VENDORED inside this repo at native/aether so the app's
+# own modifications (custom-range scanning in prober.rs / wg_prober.rs, etc.)
+# are ALWAYS compiled into libaether.so with zero manual steps. When this dir is
+# present we use it verbatim and never touch the network for the engine. Delete
+# native/aether (or set AETHER_FORCE_CLONE=1) to go back to cloning upstream.
+VENDORED_AETHER="${PROJECT_DIR}/native/aether"
+AETHER_FORCE_CLONE="${AETHER_FORCE_CLONE:-}"
+
 # clone_repo <url> <dir> <ref>
 # Tries the pinned ref first (tag or branch); on any failure cleanly falls back
 # to the repo's default branch. Always clones submodules recursively.
@@ -56,8 +64,20 @@ if [ ! -f "${HEV_DIR}/Makefile" ]; then
   exit 1
 fi
 
-echo "==> Fetching Aether engine source (engine)"
-clone_repo "${GH}/${AETHER_REPO}.git" "${AETHER_SRC}" "${AETHER_REF}"
+echo "==> Providing Aether engine source (engine)"
+if [ -z "${AETHER_FORCE_CLONE}" ] && \
+   find "${VENDORED_AETHER}" -name Cargo.toml -not -path '*/target/*' 2>/dev/null | grep -q .; then
+  echo "   using the VENDORED engine bundled in this repo: ${VENDORED_AETHER}"
+  echo "   (your prober.rs / wg_prober.rs changes are included automatically; no download needed)"
+  rm -rf "${AETHER_SRC}"
+  mkdir -p "${AETHER_SRC}"
+  # Copy everything except any local build output (target/).
+  ( cd "${VENDORED_AETHER}" && tar --exclude='./target' --exclude='*/target' -cf - . ) \
+    | ( cd "${AETHER_SRC}" && tar -xf - )
+else
+  echo "   no vendored source found (or AETHER_FORCE_CLONE set); cloning ${AETHER_REPO}"
+  clone_repo "${GH}/${AETHER_REPO}.git" "${AETHER_SRC}" "${AETHER_REF}"
+fi
 # The Aether binary crate does NOT live at the repo root; it sits in a
 # subdirectory (e.g. aether/) next to the vendored quiche/ QUIC library. Just
 # verify at least one Cargo.toml exists; build-natives.sh locates the crate.

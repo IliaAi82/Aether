@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -228,9 +229,15 @@ fun HomeScreen(
         ) {
             Column(
                 modifier = Modifier
+                    // The advanced card is much taller than a phone screen.
+                    // Give the sheet a bounded viewport and scroll that viewport;
+                    // otherwise Compose measures the whole card and Material's
+                    // bottom sheet clips its lower controls behind the nav bar.
+                    .fillMaxHeight(0.92f)
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 16.dp)
                     .navigationBarsPadding()
-                    .padding(bottom = 16.dp),
+                    .padding(bottom = 32.dp),
             ) {
                 AdvancedPanel(
                     profile = profile,

@@ -11,6 +11,7 @@ import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
@@ -36,8 +37,19 @@ import kotlin.concurrent.thread
  */
 object ShareBridge {
 
-    const val SOCKS_SHARE_PORT = 1080
-    const val HTTP_SHARE_PORT = 8118
+    /**
+     * FIXED local proxy ports — the same de-facto standard v2rayNG made
+     * universal (10808 = SOCKS5, 10809 = HTTP). These NEVER change at runtime:
+     * users type them once into another app (Psiphon, Telegram, a browser)
+     * and the address keeps working across every reconnect.
+     *
+     * 1080/8118 were abandoned on purpose: other proxy tools (Psiphon itself
+     * defaults to 1080, Privoxy owns 8118, …) commonly hold them, which caused
+     * the EADDRINUSE bind failures seen in field logs. 10808/10809 are the
+     * community-standard "local proxy" ports and are practically always free.
+     */
+    const val SOCKS_SHARE_PORT = 10808
+    const val HTTP_SHARE_PORT = 10809
 
     private const val TAG = "share"
     private const val MAX_HEADER_BYTES = 64 * 1024
@@ -46,11 +58,48 @@ object ShareBridge {
     private val _active = MutableStateFlow(false)
     val active: StateFlow<Boolean> = _active.asStateFlow()
 
+    /** Actual bound ports for the current session (null while that listener is down). */
+    private val _socksPort = MutableStateFlow<Int?>(null)
+    val socksPort: StateFlow<Int?> = _socksPort.asStateFlow()
+
+    private val _httpPort = MutableStateFlow<Int?>(null)
+    val httpPort: StateFlow<Int?> = _httpPort.asStateFlow()
+
+    /**
+     * Cumulative byte counters for THIS sharing session (reset on every
+     * [startSync]). In proxy mode the system TUN (and therefore
+     * hev-socks5-tunnel's stats API) is not running, so these counters are the
+     * ONLY source of download/upload numbers for the traffic meter.
+     *
+     * Direction mapping matches HevTunnel.traffic():
+     *  - upload   = bytes from proxy clients relayed INTO the engine (device -> internet)
+     *  - download = bytes from the engine relayed BACK to proxy clients (internet -> device)
+     */
+    private val uploadBytesCounter = AtomicLong(0L)
+    private val downloadBytesCounter = AtomicLong(0L)
+
+    /** Snapshot of the bridge's cumulative session traffic. */
+    data class Traffic(val downloadBytes: Long, val uploadBytes: Long)
+
+    fun traffic(): Traffic = Traffic(
+        downloadBytes = downloadBytesCounter.get(),
+        uploadBytes = uploadBytesCounter.get(),
+    )
+
     private var socksServer: ServerSocket? = null
     private var httpServer: ServerSocket? = null
 
+    /**
+     * Monotonic session id. Every [startSync] / [stop] bumps it, so a stale
+     * asynchronous stop can never close the listeners of a NEWER session —
+     * the race that used to fail rebinding with EADDRINUSE or leave
+     * "sharing ON" with already-dead sockets after a quick reconnect.
+     */
+    private var session = 0
+
+    /** Bind address for the current session: loopback-only or all interfaces. */
     @Volatile
-    private var starting = false
+    private var bindHost = "127.0.0.1"
 
     /**
      * Turn sharing on. Safe to call from ANY thread — including the UI thread:
@@ -59,42 +108,84 @@ object ShareBridge {
      * actual work runs on a short-lived background thread and [active] flips
      * to true once both listeners are ready.
      */
-    fun start() {
-        synchronized(this) {
-            if (_active.value || starting) return
-            starting = true
+    fun start(localOnly: Boolean = false) {
+        thread(name = "share-start", isDaemon = true) { startSync(localOnly) }
+    }
+
+    /**
+     * Turn sharing on and WAIT until the listeners are bound. Returns true when
+     * BOTH fixed listeners (SOCKS5 and HTTP) are actually accepting connections.
+     * MUST be called from a background thread (binding is a network operation).
+     *
+     * Unlike the old fire-and-forget start, callers such as the VpnService can
+     * use the return value as ground truth instead of assuming success — in
+     * proxy mode these listeners ARE the product, so a swallowed bind failure
+     * meant "connected" with nothing listening on 1080/8118.
+     */
+    fun startSync(localOnly: Boolean = false): Boolean = synchronized(this) {
+        // Already up with a healthy listener? Nothing to do.
+        if (_active.value && (socksServer?.isClosed == false || httpServer?.isClosed == false)) {
+            return@synchronized true
         }
-        thread(name = "share-start", isDaemon = true) { doStart() }
+
+        // New session: invalidates any in-flight async [stop] and clears
+        // leftovers so rebinding is deterministic.
+        session++
+        closeServers()
+        uploadBytesCounter.set(0L)
+        downloadBytesCounter.set(0L)
+
+        // SECURITY: when not explicitly sharing to the LAN, bind loopback
+        // only so no other device on the network can use us as an open
+        // proxy. LAN exposure is opt-in via the user's "share" toggle.
+        bindHost = if (localOnly) "127.0.0.1" else "0.0.0.0"
+
+        // Bind the FIXED standard ports. NO fallback: the address users typed
+        // into other apps must never silently change between sessions. A short
+        // retry loop absorbs a transient EADDRINUSE from a just-closed listener
+        // (TIME_WAIT / async teardown); a genuinely occupied port fails loudly.
+        socksServer = bindWithRetry("SOCKS5", SOCKS_SHARE_PORT)
+        httpServer = bindWithRetry("HTTP", HTTP_SHARE_PORT)
+        _socksPort.value = socksServer?.localPort
+        _httpPort.value = httpServer?.localPort
+
+        if (socksServer == null || httpServer == null) {
+            DiagnosticsLog.e(
+                TAG,
+                "Could not open the fixed proxy ports ($SOCKS_SHARE_PORT/$HTTP_SHARE_PORT) — " +
+                    "close the app holding them and reconnect.",
+            )
+            closeServers()
+            _active.value = false
+            return@synchronized false
+        }
+
+        socksServer?.let { server -> acceptLoop("share-socks", server) { relayToLocalSocks(it) } }
+        httpServer?.let { server -> acceptLoop("share-http", server) { serveHttpClient(it) } }
+        _active.value = true
+
+        val scope = if (bindHost == "127.0.0.1") "loopback only" else "all interfaces (LAN)"
+        DiagnosticsLog.i(
+            TAG,
+            "Sharing ON — SOCKS5 :${_socksPort.value ?: "unavailable"} + HTTP :${_httpPort.value ?: "unavailable"} ($scope)",
+        )
+        true
     }
 
     /** Turn sharing off. Safe to call from any thread. */
     fun stop() {
         _active.value = false
+        val stopSession = synchronized(this) { ++session }
         thread(name = "share-stop", isDaemon = true) {
-            synchronized(this) { closeServers() }
-            DiagnosticsLog.i(TAG, "Sharing OFF")
-        }
-    }
-
-    private fun doStart() {
-        try {
             synchronized(this) {
-                if (_active.value) return
-                try {
-                    socksServer = bind(SOCKS_SHARE_PORT)
-                    httpServer = bind(HTTP_SHARE_PORT)
-                } catch (e: Exception) {
-                    DiagnosticsLog.e(TAG, "Could not open sharing ports: $e")
+                // Only close if no NEWER session started meanwhile: a stale
+                // async stop must never kill a fresh session's listeners.
+                if (session == stopSession) {
+                    val hadServers = socksServer != null || httpServer != null
                     closeServers()
-                    return
+                    if (hadServers) DiagnosticsLog.i(TAG, "Sharing OFF")
                 }
-                acceptLoop("share-socks", socksServer!!) { relayToLocalSocks(it) }
-                acceptLoop("share-http", httpServer!!) { serveHttpClient(it) }
-                _active.value = true
             }
-            DiagnosticsLog.i(TAG, "Sharing ON — SOCKS5 :$SOCKS_SHARE_PORT + HTTP :$HTTP_SHARE_PORT on all interfaces")
-        } finally {
-            starting = false
         }
     }
 
@@ -115,14 +206,40 @@ object ShareBridge {
     private fun bind(port: Int): ServerSocket =
         ServerSocket().apply {
             reuseAddress = true
-            bind(InetSocketAddress("0.0.0.0", port), 32)
+            bind(InetSocketAddress(bindHost, port), 32)
         }
+
+    /**
+     * Binds a FIXED port, retrying briefly so a listener that is still being
+     * torn down by the previous session never pushes users onto a different
+     * port. The port either opens or sharing fails loudly — it NEVER moves.
+     */
+    private fun bindWithRetry(
+        label: String,
+        port: Int,
+        attempts: Int = 10,
+        delayMs: Long = 300,
+    ): ServerSocket? {
+        var lastError: Exception? = null
+        repeat(attempts) { attempt ->
+            try {
+                return bind(port)
+            } catch (e: Exception) {
+                lastError = e
+                if (attempt < attempts - 1) Thread.sleep(delayMs)
+            }
+        }
+        DiagnosticsLog.e(TAG, "$label port $port is busy (held by another app?): $lastError")
+        return null
+    }
 
     private fun closeServers() {
         runCatching { socksServer?.close() }
         socksServer = null
         runCatching { httpServer?.close() }
         httpServer = null
+        _socksPort.value = null
+        _httpPort.value = null
     }
 
     private fun acceptLoop(name: String, server: ServerSocket, handler: (Socket) -> Unit) {
@@ -222,6 +339,7 @@ object ShareBridge {
                 append("Connection: close\r\n\r\n")
             }
             upstream.getOutputStream().writeAscii(rebuilt)
+            uploadBytesCounter.addAndGet(rebuilt.length.toLong())
             relay(client, upstream)
         } finally {
             runCatching { upstream.close() }
@@ -299,14 +417,19 @@ object ShareBridge {
         return null
     }
 
-    /** Full-duplex pipe between two sockets; returns when either side ends. */
-    private fun relay(a: Socket, b: Socket) {
-        val reverse = thread(isDaemon = true) { pipe(b, a) }
-        pipe(a, b)
+    /**
+     * Full-duplex pipe between the proxy client and the engine; returns when
+     * either side ends. Every relayed byte is added to the session traffic
+     * counters so the UI meter works in proxy mode too:
+     * client -> upstream = upload, upstream -> client = download.
+     */
+    private fun relay(client: Socket, upstream: Socket) {
+        val reverse = thread(isDaemon = true) { pipe(upstream, client, downloadBytesCounter) }
+        pipe(client, upstream, uploadBytesCounter)
         runCatching { reverse.join(1_000) }
     }
 
-    private fun pipe(from: Socket, to: Socket) {
+    private fun pipe(from: Socket, to: Socket, counter: AtomicLong) {
         val buffer = ByteArray(16 * 1024)
         try {
             val input = from.getInputStream()
@@ -316,6 +439,7 @@ object ShareBridge {
                 if (n < 0) break
                 output.write(buffer, 0, n)
                 output.flush()
+                counter.addAndGet(n.toLong())
             }
         } catch (_: Exception) {
         } finally {

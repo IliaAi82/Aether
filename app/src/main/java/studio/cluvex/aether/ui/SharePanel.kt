@@ -68,6 +68,10 @@ fun SharePanel(
     var expanded by remember { mutableStateOf(false) }
     val arrowRotation by animateFloatAsState(if (expanded) 180f else 0f, tween(300), label = "shareArrow")
     val shareActive by ShareBridge.active.collectAsState()
+    // Show the ACTUAL bound ports (fixed standard ports; null while a listener is
+    // busy), so the values on screen always match what the bridge listens on.
+    val socksPort by ShareBridge.socksPort.collectAsState()
+    val httpPort by ShareBridge.httpPort.collectAsState()
 
     // Re-resolve the LAN IP whenever the panel opens or connectivity flips.
     val lanIp = remember(expanded, shareActive, state.isConnected) { ShareBridge.lanAddress() }
@@ -169,11 +173,11 @@ fun SharePanel(
                             Spacer(Modifier.height(8.dp))
                             EndpointRow(
                                 label = stringResource(R.string.share_http_label),
-                                value = "$lanIp:${ShareBridge.HTTP_SHARE_PORT}",
+                                value = "$lanIp:${httpPort ?: ShareBridge.HTTP_SHARE_PORT}",
                             )
                             EndpointRow(
                                 label = stringResource(R.string.share_socks_label),
-                                value = "$lanIp:${ShareBridge.SOCKS_SHARE_PORT}",
+                                value = "$lanIp:${socksPort ?: ShareBridge.SOCKS_SHARE_PORT}",
                             )
                             Spacer(Modifier.height(8.dp))
                             Text(

@@ -3,6 +3,8 @@ package studio.cluvex.aether.core
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.IOException
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import javax.net.ssl.SSLSocket
@@ -63,9 +65,7 @@ object NetProbe {
     fun fetchIpInfoDirect(timeoutMs: Int = 8000): IpInfo? {
         for (p in GEO_PROVIDERS) {
             val info = runCatching {
-                Socket().use { s ->
-                    s.connect(InetSocketAddress(p.host, p.port), timeoutMs)
-                    s.soTimeout = timeoutMs
+                openDirectIpv4(p.host, p.port, timeoutMs).use { s ->
                     val io = if (p.tls) tlsWrap(s, p.host, p.port, timeoutMs) else s
                     parseIpInfo(httpGet(io, p.host, p.path))
                 }
@@ -74,14 +74,35 @@ object NetProbe {
             }.getOrNull()
             if (info != null) {
                 return refineCountry(info, p) { host, port ->
-                    Socket().also {
-                        it.connect(InetSocketAddress(host, port), timeoutMs)
-                        it.soTimeout = timeoutMs
-                    }
+                    openDirectIpv4(host, port, timeoutMs)
                 }
             }
         }
         return null
+    }
+
+    /**
+     * Opens a DIRECT (non-proxied) socket, forcing IPv4.
+     *
+     * ROOT-CAUSE FIX (MCI / Hamrah-e-Aval cellular): on dual-stack mobile data
+     * the default dual-stack connect prefers IPv6, so the "your IP" badge
+     * surfaced a scoped/temporary IPv6 address instead of the operator's real
+     * public IPv4 (on Wi-Fi, often IPv4-only, it already looked correct). We
+     * resolve the host and connect to its IPv4 address explicitly, so the geo
+     * endpoint always sees — and reports — the real IPv4.
+     */
+    private fun openDirectIpv4(host: String, port: Int, timeoutMs: Int): Socket {
+        val addr = resolveIpv4(host)
+        return Socket().apply {
+            connect(InetSocketAddress(addr, port), timeoutMs)
+            soTimeout = timeoutMs
+        }
+    }
+
+    /** Resolves [host] to an IPv4 address (falls back to the first address). */
+    private fun resolveIpv4(host: String): InetAddress {
+        val all = InetAddress.getAllByName(host)
+        return all.firstOrNull { it is Inet4Address } ?: all.first()
     }
 
     /** Exit/server IP (routed through the local SOCKS5 proxy). */

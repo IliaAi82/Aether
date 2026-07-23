@@ -17,8 +17,8 @@ android {
         applicationId = "studio.cluvex.aether"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
 
         ndk {
             // We ship arm64 (primary) and arm builds.

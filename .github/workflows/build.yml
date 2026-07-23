@@ -122,6 +122,28 @@ jobs:
       - name: Build release APKs
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
+      # Do not publish an APK that can only run proxy mode. Full VPN mode needs
+      # both native cores for every ABI contained in that APK.
+      - name: Verify native libraries inside APKs
+        run: |
+          set -euo pipefail
+          found=0
+          for apk in app/build/outputs/apk/release/*.apk; do
+            [ -f "$apk" ] || continue
+            found=1
+            entries="$(unzip -Z1 "$apk")"
+            mapfile -t abis < <(printf '%s\n' "$entries" | sed -n 's#^lib/\([^/]*\)/libaether\.so$#\1#p')
+            [ "${#abis[@]}" -gt 0 ] || { echo "ERROR: no libaether.so in $apk"; exit 1; }
+            for abi in "${abis[@]}"; do
+              printf '%s\n' "$entries" | grep -qx "lib/${abi}/libhev-socks5-tunnel.so" \
+                || { echo "ERROR: $apk lacks hev for $abi"; exit 1; }
+              printf '%s\n' "$entries" | grep -qx "lib/${abi}/libaethertun.so" \
+                || { echo "ERROR: $apk lacks the aethertun JNI bridge for $abi"; exit 1; }
+            done
+            echo "Verified native cores in $apk (${abis[*]})"
+          done
+          [ "$found" -eq 1 ] || { echo "ERROR: no release APKs found"; exit 1; }
+
       - name: Collect and rename APKs
         run: |
           VERSION_NAME="$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"

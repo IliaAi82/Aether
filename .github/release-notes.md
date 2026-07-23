@@ -1,22 +1,34 @@
-## What's new in v1.1.0
+## What's new in v1.2.0
 
-- **Quick Settings tile** — connect/disconnect Aether right from the notification shade, no need to open the app. Add it once: swipe down → tap the pencil/edit button in Quick Settings → drag the **Aether** tile in.
-- **Share the VPN with your laptop or another phone** — open the side menu → **Share VPN**. Your phone exposes an **HTTP proxy (port 8118)** and a **SOCKS5 proxy (port 1080)** on your Wi‑Fi/hotspot. Tap the copy button next to the exact `ip:port` and enter it in the other device's system proxy settings.
-- **Advanced settings on the home screen** — new tune button (top-right) opens protocol, scan mode, IP version and the rest in a bottom sheet.
-- **In-place updates from now on** — every build is now signed with one stable key, so future versions install right on top of the old one. Note: updating **from v1.0.0** still needs a one-time uninstall, because v1.0.0 was signed with a temporary key.
-- **Fix:** the Share VPN panel now reliably shows the copyable `ip:port` right after you flip the switch (socket setup was silently failing on the UI thread).
-- Cleaner release titles (no more "(build N)" suffix).
+This release ships the full **advanced feature set** and makes app updates **permanent**.
+
+- **Amnezia-style anti-DPI obfuscation (Noize)** — Off / Light / Firewall / Balanced / GFW / Aggressive.
+- **New "Ironclad" scan mode** for the hardest networks.
+- **Endpoint selection** — Auto, Manual peer (`ip:port`), or **Custom range**.
+- **Scan any IP range you type** (e.g. `8.6.112.x`, `188.114.96.0/24`) — the engine scans exactly those.
+- **WireGuard keepalive**, **adjustable MTU** (default 1280), **TLS fragmentation**, **Encrypted Client Hello (ECH)**.
+- **Proxy mode** (local SOCKS5/HTTP without a full-device VPN) and **per-app split tunneling** with an app picker.
+- **Fixes:** correct "your IP" readout (no more cellular IPv6), correct upload/download traffic figures, MTU default 1280.
+- **In-place updates that stick** — the signing key is persisted inside your GitHub repo, so as long as you keep building in the **same** repository, new versions install right on top with no uninstall. (Only if you ever see “App not installed”: uninstall once, reinstall, and it's permanent from then on.)
+- **Fixed:** the advanced-settings sheet now scrolls all the way to the bottom without clipped controls.
+- **Fixed:** full-device VPN mode now includes and verifies the complete embedded TUN-to-SOCKS native core; switching back from proxy mode works normally.
 
 ---
 
-## تازه‌های نسخه ۱.۱.۰
+## تازه‌های نسخه ۱.۲.۰
 
-- **تایل تنظیمات سریع (Quick Settings)** — روشن/خاموش کردن VPN مستقیم از منوی بالای گوشی، بدون باز کردن برنامه. یک بار اضافه‌اش کنید: منو را پایین بکشید ← دکمه مداد/ویرایش ← تایل **اِتِر** را بکشید داخل.
-- **اشتراک‌گذاری VPN با لپ‌تاپ یا گوشی دیگر** — از منوی کناری ← **اشتراک‌گذاری VPN**. گوشی شما یک پراکسی **HTTP (پورت 8118)** و یک پراکسی **SOCKS5 (پورت 1080)** روی وای‌فای/هات‌اسپات باز می‌کند. آدرس دقیق `ip:port` قابل کپی است و کافی‌است در تنظیمات پراکسی سیستم دستگاه دیگر وارد شود.
-- **تنظیمات پیشرفته در صفحه اصلی** — دکمه جدید بالا–راست صفحه، پروتکل، حالت اسکن، نسخه IP و بقیه تنظیمات را در یک پنل پایینی باز می‌کند.
-- **آپدیت بدون حذف برنامه از این به بعد** — همه بیلدها از این نسخه با یک کلید ثابت امضا می‌شوند، پس نسخه‌های بعدی مستقیم روی نسخه قبلی نصب می‌شوند. نکته: برای آپدیت **از نسخه 1.0.0** فقط یک بار باید برنامه قبلی حذف شود، چون آن نسخه با کلید موقت امضا شده بود.
-- **رفع اشکال:** پنل اشتراک‌گذاری VPN حالا بلافاصله بعد از روشن کردن سوییچ، آدرس `ip:port` قابل کپی را نشان می‌دهد.
-- عنوان ریلیزها تمیزتر شد (دیگر پسوند "(build N)" ندارد).
+این نسخه مجموعهٔ کامل قابلیت‌های پیشرفته را ارائه می‌دهد و آپدیت برنامه را **دائمی** می‌کند.
+
+- **مبهم‌سازی ضدDPI سبک Amnezia (Noize)** — خاموش / سبک / فایروال / متعادل / GFW / تهاجمی.
+- **حالت اسکن جدید «Ironclad»** برای سخت‌ترین شبکه‌ها.
+- **انتخاب نقطهٔ اتصال** — خودکار، پییِر دستی (`ip:port`)، یا **رنج دلخواه**.
+- **اسکن هر رنج آی‌پی که تایپ کنید** (مثل `8.6.112.x` یا `188.114.96.0/24`) — موتور دقیقاً همان را اسکن می‌کند.
+- **Keepalive وایرگارد**، **MTU قابل تنظیم** (پیش‌فرض ۱۲۸۰)، **قطعه‌قطعه‌سازی TLS**، **Encrypted Client Hello (ECH)**.
+- **حالت پراکسی** (SOCKS5/HTTP محلی بدون گرفتن کل دستگاه) و **تانل تفکیکی برای هر برنامه** با انتخابگر برنامه.
+- **رفع اشکال:** نمایش درست «آی‌پی شما» (دیگر IPv6 سلولار نه)، اصلاح مقدار ترافیک آپلود/دانلود، پیش‌فرض MTU برابر ۱۲۸۰.
+- **آپدیت بدون حذفِ ماندگار** — کلید امضا داخل مخزن گیت‌هابِ خودتان ذخیره می‌ماند، پس تا وقتی در **همان** مخزن بیلد بگیرید نسخه‌های جدید دقیقاً روی نسخهٔ قبلی نصب می‌شوند بدون حذف. (فقط اگر پیام «برنامه نصب نشد» دیدید: یک‌بار حذف و دوباره نصب کنید؛ از آن به بعد دائمی است.)
+- **رفع شد:** پنل تنظیمات پیشرفته تا آخر اسکرول می‌شود و کنترل‌های پایین صفحه بریده نمی‌شوند.
+- **رفع شد:** هستهٔ کامل TUN به SOCKS داخل APK قرار می‌گیرد و قبل از انتشار بررسی می‌شود؛ برگشتن از حالت پراکسی به VPN اصلی حالا درست کار می‌کند.
 
 ## Downloads
 

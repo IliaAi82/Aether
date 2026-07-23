@@ -38,21 +38,27 @@ import java.util.Locale
 import kotlinx.coroutines.delay
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.HevTunnel
+import studio.cluvex.aether.core.ShareBridge
 
 /**
  * Live traffic meter shown while connected, like mainstream VPN apps:
  * instantaneous download/upload rate plus session totals.
  *
- * Data comes from hev-socks5-tunnel's own cumulative counters
- * (TProxyGetStats -> [tx_packets, tx_bytes, rx_packets, rx_bytes]).
- * From the tunnel core's perspective TX is what it WRITES to the TUN device
- * (data arriving at apps = download) and RX is what it READS from the TUN
- * (data leaving apps = upload).
+ * Data is the SUM of both possible traffic paths, so the meter works in every
+ * mode:
+ *  - hev-socks5-tunnel's cumulative counters (system-VPN mode), exposed as
+ *    direction-corrected totals via HevTunnel.traffic(). In proxy mode the TUN
+ *    is skipped and this source is null.
+ *  - ShareBridge.traffic(): bytes relayed through the local SOCKS5/HTTP share
+ *    listeners. In proxy mode this is the ONLY source (external apps like
+ *    Psiphon connect through it); in system-VPN mode it additionally counts
+ *    LAN-sharing clients.
  *
  * Counters are polled once per second; rates are computed from deltas against
  * a monotonic clock (SystemClock.elapsedRealtime, immune to wall-clock jumps).
- * Negative deltas (core restart during auto-reconnect) are clamped to zero and
- * the baseline is rebased automatically.
+ * Negative deltas (core restart during auto-reconnect, or a new sharing
+ * session resetting bridge counters) are clamped to zero and the baseline is
+ * rebased automatically.
  */
 @Composable
 fun TrafficPanel(
@@ -69,10 +75,12 @@ fun TrafficPanel(
         var lastUp = -1L
         var lastAt = 0L
         while (true) {
-            val stats = HevTunnel.stats()
-            if (stats != null && stats.size >= 4) {
-                val down = stats[1].coerceAtLeast(0L)
-                val up = stats[3].coerceAtLeast(0L)
+            val hev = HevTunnel.traffic()
+            val share = ShareBridge.traffic()
+            val hasSource = hev != null || ShareBridge.active.value
+            if (hasSource) {
+                val down = (hev?.downloadBytes ?: 0L) + share.downloadBytes
+                val up = (hev?.uploadBytes ?: 0L) + share.uploadBytes
                 val now = SystemClock.elapsedRealtime()
                 if (lastAt > 0L && now > lastAt) {
                     val dtMs = now - lastAt

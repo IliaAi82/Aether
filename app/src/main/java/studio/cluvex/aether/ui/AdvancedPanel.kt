@@ -1,5 +1,6 @@
 package studio.cluvex.aether.ui
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -11,14 +12,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -29,18 +36,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
+import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.model.ConnectionProfile
+import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.IpVersion
+import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
+import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.ui.components.AppPickerDialog
+import studio.cluvex.aether.ui.components.DropdownSelector
 import studio.cluvex.aether.ui.components.SegmentedSelector
 
 /**
- * Collapsible "Advanced" card exposing exactly the same knobs as the desktop
- * build: protocol, scan mode, IP version, quick-reconnect and MASQUE HTTP/2.
+ * Collapsible "Advanced" card exposing the full engine v1.3.0 feature set:
+ * protocol, scan mode, IP version, Amnezia-style obfuscation, endpoint
+ * selection (auto / manual IP / custom range), keepalive, MTU, TLS
+ * fragmentation, ECH, MASQUE-over-HTTP/2, quick reconnect, proxy mode and
+ * per-app split tunneling.
  */
 @Composable
 fun AdvancedPanel(
@@ -53,6 +73,7 @@ fun AdvancedPanel(
     startExpanded: Boolean = false,
 ) {
     var expanded by remember { mutableStateOf(startExpanded) }
+    var showAppPicker by remember { mutableStateOf(false) }
     val arrowRotation by animateFloatAsState(if (expanded) 180f else 0f, tween(300), label = "arrow")
 
     Card(
@@ -75,7 +96,6 @@ fun AdvancedPanel(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                     )
-                    Spacer(Modifier.height(0.dp))
                     Text(
                         text = "  " + stringResource(R.string.advanced),
                         style = MaterialTheme.typography.titleMedium,
@@ -94,6 +114,7 @@ fun AdvancedPanel(
                 Column {
                     Spacer(Modifier.height(16.dp))
 
+                    // ---------- Core ----------
                     SettingLabel(stringResource(R.string.protocol))
                     SegmentedSelector(
                         options = Protocol.entries,
@@ -105,7 +126,7 @@ fun AdvancedPanel(
                     Spacer(Modifier.height(16.dp))
 
                     SettingLabel(stringResource(R.string.scan_mode))
-                    SegmentedSelector(
+                    DropdownSelector(
                         options = ScanMode.entries,
                         selected = profile.scanMode,
                         onSelect = { onProfileChange(profile.copy(scanMode = it)) },
@@ -122,19 +143,92 @@ fun AdvancedPanel(
                         label = { ipLabel(it) },
                         enabled = enabled,
                     )
+
+                    // ---------- Transport & anti-DPI ----------
+                    SectionHeader(stringResource(R.string.section_transport))
+
+                    SettingLabel(stringResource(R.string.noize_title))
+                    DropdownSelector(
+                        options = Noize.entries,
+                        selected = profile.noize,
+                        onSelect = { onProfileChange(profile.copy(noize = it)) },
+                        label = { noizeLabel(it) },
+                        enabled = enabled,
+                    )
+                    HelperText(stringResource(R.string.noize_desc))
+                    Spacer(Modifier.height(16.dp))
+
+                    SettingLabel(stringResource(R.string.endpoint_mode))
+                    SegmentedSelector(
+                        options = EndpointMode.entries,
+                        selected = profile.endpointMode,
+                        onSelect = { onProfileChange(profile.copy(endpointMode = it)) },
+                        label = { endpointLabel(it) },
+                        enabled = enabled,
+                    )
+                    if (profile.endpointMode == EndpointMode.MANUAL_PEER) {
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = profile.manualPeer,
+                            onValueChange = { onProfileChange(profile.copy(manualPeer = it)) },
+                            enabled = enabled,
+                            singleLine = true,
+                            label = { Text(stringResource(R.string.manual_peer_label)) },
+                            placeholder = { Text(stringResource(R.string.manual_peer_hint)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (profile.endpointMode == EndpointMode.MANUAL_RANGE) {
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = profile.manualRange,
+                            onValueChange = { onProfileChange(profile.copy(manualRange = it)) },
+                            enabled = enabled,
+                            singleLine = false,
+                            label = { Text(stringResource(R.string.manual_range_label)) },
+                            placeholder = { Text(stringResource(R.string.manual_range_hint)) },
+                            supportingText = { Text(stringResource(R.string.manual_range_help)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+
+                    SettingLabel(stringResource(R.string.keepalive_label))
+                    DropdownSelector(
+                        options = ConnectionProfile.KEEPALIVE_PRESETS,
+                        selected = profile.keepalive,
+                        onSelect = { onProfileChange(profile.copy(keepalive = it)) },
+                        label = { if (it == 0) stringResource(R.string.keepalive_default) else "$it" },
+                        enabled = enabled,
+                    )
+                    Spacer(Modifier.height(16.dp))
+
+                    SettingLabel(stringResource(R.string.mtu_label))
+                    DropdownSelector(
+                        options = ConnectionProfile.MTU_PRESETS,
+                        selected = profile.mtu,
+                        onSelect = { onProfileChange(profile.copy(mtu = it)) },
+                        label = { "$it" },
+                        enabled = enabled,
+                    )
+                    HelperText(stringResource(R.string.mtu_desc))
                     Spacer(Modifier.height(8.dp))
 
-                    HorizontalDivider(
-                        modifier = Modifier.padding(vertical = 8.dp),
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
-                    )
+                    Divider()
 
                     ToggleRow(
-                        title = stringResource(R.string.quick_reconnect),
-                        description = stringResource(R.string.quick_reconnect_desc),
-                        checked = profile.quickReconnect,
+                        title = stringResource(R.string.fragment_title),
+                        description = stringResource(R.string.fragment_desc),
+                        checked = profile.fragment,
                         enabled = enabled,
-                        onChange = { onProfileChange(profile.copy(quickReconnect = it)) },
+                        onChange = { onProfileChange(profile.copy(fragment = it)) },
+                    )
+                    ToggleRow(
+                        title = stringResource(R.string.ech_title),
+                        description = stringResource(R.string.ech_desc),
+                        checked = profile.ech,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(ech = it)) },
                     )
                     ToggleRow(
                         title = stringResource(R.string.masque_http2),
@@ -143,10 +237,102 @@ fun AdvancedPanel(
                         enabled = enabled,
                         onChange = { onProfileChange(profile.copy(masqueHttp2 = it)) },
                     )
+                    ToggleRow(
+                        title = stringResource(R.string.quick_reconnect),
+                        description = stringResource(R.string.quick_reconnect_desc),
+                        checked = profile.quickReconnect,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(quickReconnect = it)) },
+                    )
+
+                    // ---------- Routing ----------
+                    SectionHeader(stringResource(R.string.section_routing))
+
+                    ToggleRow(
+                        title = stringResource(R.string.proxy_mode_title),
+                        description = stringResource(R.string.proxy_mode_desc),
+                        checked = profile.proxyMode,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(proxyMode = it)) },
+                    )
+                    // Fixed local proxy endpoints (v2rayNG-style standard ports,
+                    // they never change) shown right under the toggle with a
+                    // one-tap copy button, so nobody has to dig through logs.
+                    AnimatedVisibility(visible = profile.proxyMode) {
+                        Column {
+                            Spacer(Modifier.height(4.dp))
+                            HelperText(stringResource(R.string.proxy_endpoints_hint))
+                            ProxyEndpointRow(
+                                label = stringResource(R.string.proxy_socks_label),
+                                value = "127.0.0.1:${ShareBridge.SOCKS_SHARE_PORT}",
+                            )
+                            ProxyEndpointRow(
+                                label = stringResource(R.string.proxy_http_label),
+                                value = "127.0.0.1:${ShareBridge.HTTP_SHARE_PORT}",
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+
+                    SettingLabel(stringResource(R.string.split_mode))
+                    SegmentedSelector(
+                        options = SplitMode.entries,
+                        selected = profile.splitMode,
+                        onSelect = { onProfileChange(profile.copy(splitMode = it)) },
+                        label = { splitLabel(it) },
+                        enabled = enabled,
+                    )
+                    if (profile.splitMode != SplitMode.OFF) {
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = { showAppPicker = true },
+                            enabled = enabled,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Rounded.Apps, contentDescription = null)
+                            Text(
+                                text = "  " + stringResource(
+                                    R.string.split_select_apps,
+                                    profile.splitApps.size,
+                                ),
+                            )
+                        }
+                    }
                 }
             }
         }
     }
+
+    if (showAppPicker) {
+        AppPickerDialog(
+            selected = profile.splitApps,
+            onDismiss = { showAppPicker = false },
+            onConfirm = {
+                onProfileChange(profile.copy(splitApps = it))
+                showAppPicker = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun SectionHeader(text: String) {
+    Spacer(Modifier.height(8.dp))
+    Divider()
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+    )
+}
+
+@Composable
+private fun Divider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = 8.dp),
+        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+    )
 }
 
 @Composable
@@ -156,6 +342,16 @@ private fun SettingLabel(text: String) {
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun HelperText(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 6.dp),
     )
 }
 
@@ -204,6 +400,7 @@ private fun scanLabel(mode: ScanMode): String = when (mode) {
     ScanMode.BALANCED -> stringResource(R.string.scan_balanced)
     ScanMode.THOROUGH -> stringResource(R.string.scan_thorough)
     ScanMode.STEALTH -> stringResource(R.string.scan_stealth)
+    ScanMode.IRONCLAD -> stringResource(R.string.scan_ironclad)
 }
 
 @Composable
@@ -211,4 +408,71 @@ private fun ipLabel(ip: IpVersion): String = when (ip) {
     IpVersion.V4 -> stringResource(R.string.ip_v4)
     IpVersion.V6 -> stringResource(R.string.ip_v6)
     IpVersion.BOTH -> stringResource(R.string.ip_both)
+}
+
+@Composable
+private fun noizeLabel(n: Noize): String = when (n) {
+    Noize.OFF -> stringResource(R.string.noize_off)
+    Noize.LIGHT -> stringResource(R.string.noize_light)
+    Noize.FIREWALL -> stringResource(R.string.noize_firewall)
+    Noize.BALANCED -> stringResource(R.string.noize_balanced)
+    Noize.GFW -> stringResource(R.string.noize_gfw)
+    Noize.AGGRESSIVE -> stringResource(R.string.noize_aggressive)
+}
+
+@Composable
+private fun endpointLabel(m: EndpointMode): String = when (m) {
+    EndpointMode.AUTO -> stringResource(R.string.endpoint_auto)
+    EndpointMode.MANUAL_PEER -> stringResource(R.string.endpoint_peer)
+    EndpointMode.MANUAL_RANGE -> stringResource(R.string.endpoint_range)
+}
+
+@Composable
+private fun splitLabel(m: SplitMode): String = when (m) {
+    SplitMode.OFF -> stringResource(R.string.split_off)
+    SplitMode.INCLUDE -> stringResource(R.string.split_include)
+    SplitMode.EXCLUDE -> stringResource(R.string.split_exclude)
+}
+
+/**
+ * One fixed proxy endpoint (e.g. "127.0.0.1:10808") with a copy button.
+ * The value is a compile-time constant address: it is the SAME every session,
+ * so what the user copies into Psiphon/Telegram/etc. keeps working forever.
+ */
+@Composable
+private fun ProxyEndpointRow(label: String, value: String) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyLarge,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        IconButton(onClick = {
+            clipboard.setText(AnnotatedString(value))
+            Toast.makeText(context, R.string.share_copied, Toast.LENGTH_SHORT).show()
+        }) {
+            Icon(
+                Icons.Rounded.ContentCopy,
+                contentDescription = stringResource(R.string.share_copy),
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
 }

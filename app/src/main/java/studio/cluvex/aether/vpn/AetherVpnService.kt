@@ -27,6 +27,7 @@ import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
+import studio.cluvex.aether.model.SplitMode
 import java.io.File
 
 /**
@@ -109,20 +110,55 @@ class AetherVpnService : VpnService() {
         }
         DiagnosticsLog.i(TAG, "SOCKS5 port is up.")
 
-        establishTun()
-        startTun2Socks()
+        if (profile.proxyMode) {
+            // Proxy mode: DON'T capture the whole device through a system TUN.
+            // Instead expose the engine's SOCKS5 + an HTTP proxy so individual
+            // apps (or the Wi-Fi proxy setting) can opt in. This is ideal when
+            // only one app (e.g. Telegram) needs the tunnel. LAN exposure only
+            // happens when the user explicitly turned sharing on.
+            //
+            // startSync is ground truth: in proxy mode these listeners ARE the
+            // product, so a bind failure must fail the connection loudly
+            // instead of claiming "Local proxy ready" over dead ports (the old
+            // fire-and-forget start swallowed EADDRINUSE and still reported
+            // 1080/8118 as ready — external apps then couldn't connect).
+            val shareReady = ShareBridge.startSync(localOnly = !profile.lanShare)
+            if (!shareReady) {
+                DiagnosticsLog.e(TAG, "Proxy mode: the fixed local proxy ports could not be opened (see errors above).")
+                throw IllegalStateException(getString(R.string.err_proxy_ports))
+            }
+            // Ports are FIXED (v2rayNG-style standard) — the same values are
+            // shown as copyable rows under the Proxy-mode toggle in the UI.
+            DiagnosticsLog.i(
+                TAG,
+                "Proxy mode: system TUN skipped. Local proxy ready — " +
+                    "SOCKS5 127.0.0.1:${ShareBridge.SOCKS_SHARE_PORT}, HTTP 127.0.0.1:${ShareBridge.HTTP_SHARE_PORT}",
+            )
+        } else {
+            establishTun(profile)
+            startTun2Socks(profile)
+            // LAN sharing: if the user enabled it, expose the tunnel to other
+            // devices on the same Wi-Fi/hotspot (HTTP + SOCKS5 bridge).
+            if (profile.lanShare) ShareBridge.start(localOnly = false)
+        }
 
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
         updateNotification(getString(R.string.state_connected))
-        DiagnosticsLog.i(TAG, "TUN + hev tunnel started. Running end-to-end self-test…")
-
-        // LAN sharing: if the user enabled it, expose the tunnel to other
-        // devices on the same Wi-Fi/hotspot (HTTP + SOCKS5 bridge).
-        if (profile.lanShare) ShareBridge.start()
+        DiagnosticsLog.i(
+            TAG,
+            if (profile.proxyMode) "Proxy started. Running end-to-end self-test…"
+            else "TUN + hev tunnel started. Running end-to-end self-test…",
+        )
 
         // Auto-run the connectivity self-test so the log panel immediately shows
         // whether traffic actually flows (and if not, exactly which stage fails).
-        scope.launch { runCatching { Diagnostics.run() } }
+        // In proxy mode, test THROUGH the shared SOCKS5 listener — the exact
+        // endpoint external apps connect to — so a dead bridge can no longer
+        // hide behind a passing engine-port (1819) self-test.
+        val diagPort =
+            if (profile.proxyMode) ShareBridge.socksPort.value ?: SOCKS_PORT
+            else SOCKS_PORT
+        scope.launch { runCatching { Diagnostics.run(port = diagPort) } }
 
         superviseEngine(profile)
     }
@@ -157,10 +193,13 @@ class AetherVpnService : VpnService() {
 
     private fun currentScopeActive(): Boolean = runJob?.isActive ?: false
 
-    private fun establishTun() {
+    private fun establishTun(profile: ConnectionProfile) {
+        // User-tunable MTU (defaults to 1280 — safe for Iranian mobile/DPI).
+        // Clamped to a sane range so a bad saved value can't break establish().
+        val mtu = profile.mtu.coerceIn(576, 9000)
         val builder = Builder()
             .setSession("Aether")
-            .setMtu(MTU)
+            .setMtu(mtu)
             // The TUN address MUST match hev's tunnel.ipv4/ipv6 (see writeHevConfig).
             .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)
             .addAddress(TunnelConfig.TUN_IPV6, TunnelConfig.TUN_IPV6_PREFIX)
@@ -169,14 +208,10 @@ class AetherVpnService : VpnService() {
 
         TunnelConfig.DNS_SERVERS.forEach { builder.addDnsServer(it) }
 
-        // Never route the app's own (engine) traffic back into the tunnel.
-        // This is our loop-prevention mechanism and is equivalent to v2rayNG's
-        // in-process protect(): the spawned engine shares the app UID, so
-        // excluding the package keeps its upstream traffic off the TUN.
-        try {
-            builder.addDisallowedApplication(packageName)
-        } catch (_: Exception) {
-        }
+        // Split tunneling + loop prevention (keeps the engine's own traffic off
+        // the TUN, equivalent to v2rayNG's in-process protect()).
+        applyAppFilter(builder, profile)
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
         }
@@ -186,12 +221,58 @@ class AetherVpnService : VpnService() {
         DiagnosticsLog.i(
             TAG,
             "TUN established: ipv4=${TunnelConfig.TUN_IPV4}/${TunnelConfig.TUN_IPV4_PREFIX} " +
-                "ipv6=${TunnelConfig.TUN_IPV6}/${TunnelConfig.TUN_IPV6_PREFIX} mtu=$MTU dns=${TunnelConfig.DNS_SERVERS}",
+                "ipv6=${TunnelConfig.TUN_IPV6}/${TunnelConfig.TUN_IPV6_PREFIX} mtu=$mtu " +
+                "split=${profile.splitMode} apps=${profile.splitApps.size} dns=${TunnelConfig.DNS_SERVERS}",
         )
     }
 
-    private fun startTun2Socks() {
-        val config = writeHevConfig()
+    /**
+     * Applies the split-tunnel policy and always keeps the app's own engine
+     * traffic off the TUN (loop prevention).
+     *
+     * - OFF     : everything routes through the VPN except our own package.
+     * - INCLUDE : ONLY the chosen apps route through the VPN. Our own package is
+     *             implicitly excluded because it is never added to the allow-list.
+     * - EXCLUDE : everything routes through the VPN except the chosen apps + us.
+     */
+    private fun applyAppFilter(builder: Builder, profile: ConnectionProfile) {
+        val apps = profile.splitApps.filter { it.isNotBlank() && it != packageName }
+        when (profile.splitMode) {
+            SplitMode.INCLUDE -> {
+                if (apps.isEmpty()) {
+                    // Nothing selected -> fall back to OFF so we don't build a
+                    // tunnel that carries no traffic at all.
+                    safeDisallow(builder, packageName)
+                    return
+                }
+                apps.forEach { safeAllow(builder, it) }
+            }
+            SplitMode.EXCLUDE -> {
+                safeDisallow(builder, packageName)
+                apps.forEach { safeDisallow(builder, it) }
+            }
+            SplitMode.OFF -> safeDisallow(builder, packageName)
+        }
+    }
+
+    private fun safeAllow(builder: Builder, pkg: String) {
+        try {
+            builder.addAllowedApplication(pkg)
+        } catch (_: Exception) {
+            DiagnosticsLog.w(TAG, "addAllowedApplication failed for $pkg (not installed?)")
+        }
+    }
+
+    private fun safeDisallow(builder: Builder, pkg: String) {
+        try {
+            builder.addDisallowedApplication(pkg)
+        } catch (_: Exception) {
+            if (pkg != packageName) DiagnosticsLog.w(TAG, "addDisallowedApplication failed for $pkg")
+        }
+    }
+
+    private fun startTun2Socks(profile: ConnectionProfile) {
+        val config = writeHevConfig(profile.mtu.coerceIn(576, 9000))
         // Use the LIVE fd of the ParcelFileDescriptor (do NOT detach): hev uses it
         // while running and we close the pfd ourselves on teardown. The fd is only
         // valid inside THIS process, which is exactly why hev must run in-process.
@@ -210,11 +291,11 @@ class AetherVpnService : VpnService() {
      * nowhere to be routed, so the tunnel "connects" but no site ever loads.
      * These MUST equal the VpnService addAddress values.
      */
-    private fun writeHevConfig(): File {
+    private fun writeHevConfig(mtu: Int): File {
         val file = File(filesDir, "hev.yaml")
         val yaml = """
             tunnel:
-              mtu: $MTU
+              mtu: $mtu
               ipv4: ${TunnelConfig.TUN_IPV4}
               ipv6: '${TunnelConfig.TUN_IPV6}'
             socks5:

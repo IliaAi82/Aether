@@ -2,11 +2,14 @@
 #
 # Builds the native cores and installs them into app/src/main/jniLibs/<abi>/:
 #
-#   libhev-socks5-tunnel.so <- hev's OWN JNI library (hev-jni.c), built with
-#                    -DPKGNAME=studio/cluvex/aether/core so JNI_OnLoad registers
-#                    the TProxy* natives on our TProxyService class. Runs
+#   libhev-socks5-tunnel.so <- hev's core, built WITHOUT its bundled JNI layer
+#                    (hev-jni.c is stripped from the build — see build_hev).
+#                    Only its stable public C API is used.
+#   libaethertun.so <- OUR OWN JNI bridge (scripts/aethertun-jni.c). The app
+#                    loads THIS library; it binds hev's C API and exports the
+#                    Java_* symbols TProxyService.kt declares. Runs the tunnel
 #                    IN-PROCESS (the VpnService TUN fd is per-process) on a
-#                    native pthread hev creates itself (v2rayNG's exact mode).
+#                    native pthread the bridge creates itself.
 #   libaether.so  <- the Aether engine, cross-compiled from Rust with cargo-ndk.
 #
 # Usage:  build-natives.sh [hev|aether|all]   (default: all)
@@ -83,10 +86,22 @@ build_hev() {
     exit 1
   fi
 
-  # PKGNAME makes hev's own hev-jni.c register its natives
-  # (TProxyStartService/TProxyStopService/TProxyGetStats) onto OUR Kotlin
-  # class studio.cluvex.aether.core.TProxyService — exactly the mechanism
-  # v2rayNG uses (compile-hevtun.sh: -DPKGNAME=com/v2ray/ang/service).
+  # ---- Strip hev's bundled JNI layer (hev-jni.c) OUT of the build. --------
+  # FIELD-PROVEN root cause (round 2): even when the app loads OUR bridge
+  # (libaethertun.so), ART locates JNI_OnLoad via dlsym() on the loaded
+  # library's handle — and dlsym() searches the library AND its DT_NEEDED
+  # dependencies. hev's JNI_OnLoad inside libhev-socks5-tunnel.so was found
+  # and executed anyway, and its RegisterNatives failed on upstream's drifted
+  # 'TProxyStopService()Z' signature, killing System.loadLibrary(). So hev's
+  # JNI layer must not exist in the shipped .so AT ALL (the bridge also
+  # defines its own JNI_OnLoad as a second line of defense).
+  local mkfile
+  while IFS= read -r -d '' mkfile; do
+    sed -i.aetherbak 's|[^[:space:]]*hev-jni\.c||g' "${mkfile}"
+    rm -f "${mkfile}.aetherbak"
+  done < <(find "${HEV_DIR}" -name '*.mk' -print0)
+  find "${HEV_DIR}" -name 'hev-jni.c' -delete
+
   echo "==> [hev] ndk-build (${mk_dir}/Android.mk) for ${ABIS[*]} (API ${API})"
   ( cd "${HEV_DIR}" && "${ndkbuild}" \
       NDK_PROJECT_PATH="${HEV_DIR}" \
@@ -94,13 +109,14 @@ build_hev() {
       ${app_mk:+NDK_APPLICATION_MK="${app_mk}"} \
       APP_ABI="${ABIS[*]}" \
       APP_PLATFORM="android-${API}" \
-      "APP_CFLAGS=-O3 -DPKGNAME=studio/cluvex/aether/core" \
+      APP_STL="c++_static" \
+      "APP_CFLAGS=-O3" \
       -j"$(nproc 2>/dev/null || echo 2)" )
 
   # hev must run IN-PROCESS (the VpnService TUN fd is per-process), and it
-  # must run on a NATIVE thread. We now ship hev's own JNI library verbatim:
-  # its JNI_OnLoad registers the TProxy* natives and TProxyStartService runs
-  # the tunnel event loop on a plain pthread that hev creates itself.
+  # must run on a NATIVE thread. We ship hev's core plus OUR OWN JNI bridge
+  # (libaethertun.so); the bridge runs the tunnel event loop on a detached
+  # pthread it creates itself.
   #
   # ROOT-CAUSE NOTE: the previous custom wrapper (libhev.so + hev_jni.c)
   # called hev_socks5_tunnel_main directly on a Java (ART-attached) thread.
@@ -110,7 +126,7 @@ build_hev() {
   # seconds after real traffic starts — with nothing in the Java crash log.
   # Running the loop on hev's own pthread (v2rayNG's proven mode) avoids ART
   # entirely.
-  local abi libsdir out dynsyms
+  local abi libsdir out dynsyms needed dep
   for abi in "${ABIS[@]}"; do
     libsdir="${HEV_DIR}/libs/${abi}"
     out="${JNI_DIR}/${abi}/libhev-socks5-tunnel.so"
@@ -124,21 +140,97 @@ build_hev() {
     # Never ship stale artifacts from the old wrapper approach.
     rm -f "${JNI_DIR}/${abi}/libhev.so" "${JNI_DIR}/${abi}/libhevcore.so"
 
-    # ---- Hard verification: NEVER ship a library that cannot register. ----
+    # ---- Hard verification: hev must export its STABLE public C API. ----
+    # We no longer use hev's bundled JNI layer (hev-jni.c) at all — see the
+    # root-cause note below. Only the C entry points matter, and those have
+    # been stable across hev releases for years.
     dynsyms="$("${NDK_TOOLCHAIN}/llvm-nm" --dynamic --defined-only "${out}" 2>/dev/null || true)"
-    if ! echo "${dynsyms}" | grep -qw 'JNI_OnLoad'; then
-      echo "ERROR: [${abi}] libhev-socks5-tunnel.so lacks JNI_OnLoad — hev-jni.c was not compiled in." >&2
+    for sym in hev_socks5_tunnel_main hev_socks5_tunnel_quit hev_socks5_tunnel_stats; do
+      if ! echo "${dynsyms}" | grep -qw "${sym}"; then
+        echo "ERROR: [${abi}] libhev-socks5-tunnel.so lacks ${sym}." >&2
+        exit 1
+      fi
+    done
+    # hev-jni.c was stripped above; if JNI_OnLoad is STILL exported, the strip
+    # failed (upstream moved/renamed the file) and its RegisterNatives would
+    # run again via the dlsym() dependency search. Never ship that.
+    if echo "${dynsyms}" | grep -qw 'JNI_OnLoad'; then
+      echo "ERROR: [${abi}] libhev-socks5-tunnel.so still exports JNI_OnLoad — hev-jni.c was not stripped." >&2
+      echo "       Update the strip logic in build_hev for the new upstream layout." >&2
       exit 1
     fi
-    if ! echo "${dynsyms}" | grep -qw 'hev_socks5_tunnel_main'; then
-      echo "ERROR: [${abi}] libhev-socks5-tunnel.so lacks hev_socks5_tunnel_main." >&2
+
+    # ---- Build OUR OWN JNI bridge: libaethertun.so ------------------------
+    # ROOT CAUSE of "VPN mode never connects while proxy mode works": the app
+    # used to load libhev-socks5-tunnel.so directly and rely on hev's bundled
+    # hev-jni.c to register the TProxy* natives. Upstream hev CHANGED that
+    # JNI ABI (TProxyStartService '(Ljava/lang/String;I)V' -> ')Z'); since we
+    # build hev's default branch, RegisterNatives inside its JNI_OnLoad began
+    # failing with NoSuchMethodError, System.loadLibrary() threw, and VPN mode
+    # died with "hev native library unavailable" (proxy mode never loads hev).
+    #
+    # PERMANENT FIX: ship our own tiny JNI bridge (scripts/aethertun-jni.c)
+    # linked against hev's stable public C API. -Wl,--no-undefined resolves
+    # those symbols at BUILD time, so any upstream break fails CI loudly
+    # instead of shipping a broken APK. hev's JNI layer is stripped from the
+    # build above AND the bridge defines its own JNI_OnLoad (ART finds
+    # JNI_OnLoad via dlsym(), which also searches DT_NEEDED dependencies —
+    # exactly how hev's one got executed in the field), so upstream JNI ABI
+    # drift is harmless now.
+    # The tunnel loop still runs on a NATIVE pthread created in the bridge
+    # (see the ART SIGSEGV note above).
+    clang="$(clang_for_abi "${abi}")"
+    if [ -z "${clang}" ] || [ ! -x "${clang}" ]; then
+      echo "ERROR: [${abi}] NDK clang not found for this ABI." >&2
       exit 1
     fi
-    if ! grep -aq 'studio/cluvex/aether/core/TProxyService' "${out}"; then
-      echo "ERROR: [${abi}] PKGNAME not applied — JNI_OnLoad would register natives on the wrong class." >&2
+    bridge_src="${SCRIPT_DIR}/aethertun-jni.c"
+    bridge_out="${JNI_DIR}/${abi}/libaethertun.so"
+    if [ ! -f "${bridge_src}" ]; then
+      echo "ERROR: bridge source not found: ${bridge_src}" >&2
       exit 1
     fi
-    echo "    [${abi}] libhev-socks5-tunnel.so verified: JNI_OnLoad + hev_socks5_tunnel_main + PKGNAME OK"
+    echo "==> [hev] building libaethertun.so (our own JNI bridge) for ${abi}"
+    "${clang}" -O2 -fPIC -shared -Wall -Werror \
+      -Wl,-soname,libaethertun.so -Wl,--no-undefined \
+      -o "${bridge_out}" "${bridge_src}" \
+      -L"${JNI_DIR}/${abi}" -lhev-socks5-tunnel -llog
+    bridgesyms="$("${NDK_TOOLCHAIN}/llvm-nm" --dynamic --defined-only "${bridge_out}" 2>/dev/null || true)"
+    for sym in \
+      JNI_OnLoad \
+      Java_studio_cluvex_aether_core_TProxyService_TProxyStartService \
+      Java_studio_cluvex_aether_core_TProxyService_TProxyStopService \
+      Java_studio_cluvex_aether_core_TProxyService_TProxyGetStats; do
+      if ! echo "${bridgesyms}" | grep -qw "${sym}"; then
+        echo "ERROR: [${abi}] libaethertun.so lacks ${sym} — Kotlin externals would not resolve." >&2
+        exit 1
+      fi
+    done
+    echo "    [${abi}] libaethertun.so verified: all Java_* bridge symbols present"
+
+    # A previous APK contained the main hev library but not one of its runtime
+    # dependencies (most commonly libc++_shared.so). Android then refused to
+    # load hev, so proxy mode worked while full-device VPN mode failed. We build
+    # with the static C++ runtime above and also enforce that every remaining
+    # DT_NEEDED entry is either an Android system library or packaged beside it.
+    needed="$("${NDK_TOOLCHAIN}/llvm-readelf" -d "${out}" 2>/dev/null \
+      | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')"
+    while IFS= read -r dep; do
+      [ -n "${dep}" ] || continue
+      case "${dep}" in
+        libc.so|libdl.so|liblog.so|libm.so|libandroid.so|libz.so) ;;
+        *)
+          if [ -f "${libsdir}/${dep}" ]; then
+            cp "${libsdir}/${dep}" "${JNI_DIR}/${abi}/${dep}"
+            echo "    [${abi}] packaged hev dependency: ${dep}"
+          else
+            echo "ERROR: [${abi}] unresolved hev runtime dependency: ${dep}" >&2
+            exit 1
+          fi
+          ;;
+      esac
+    done <<< "${needed}"
+    echo "    [${abi}] libhev-socks5-tunnel.so verified: stable C API (main/quit/stats) OK"
     "${NDK_TOOLCHAIN}/llvm-readelf" -d "${out}" 2>/dev/null | grep NEEDED || true
   done
 }

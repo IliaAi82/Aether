@@ -34,10 +34,13 @@ object Diagnostics {
     private const val OUTBOUND_GRACE_MS = 90_000L
     private const val OUTBOUND_RETRY_DELAY_MS = 3_000L
 
-    fun resetChecks() {
+    fun resetChecks(
+        host: String = TunnelConfig.SOCKS_HOST,
+        port: Int = TunnelConfig.SOCKS_PORT,
+    ) {
         DiagnosticsLog.setChecks(
             listOf(
-                ComponentCheck(C_PORT, "SOCKS5 port ${TunnelConfig.SOCKS_HOST}:${TunnelConfig.SOCKS_PORT}"),
+                ComponentCheck(C_PORT, "SOCKS5 port $host:$port"),
                 ComponentCheck(C_HANDSHAKE, "SOCKS5 handshake"),
                 ComponentCheck(C_TCP, "TCP via proxy (1.1.1.1:80)"),
                 ComponentCheck(C_DNS, "DNS + HTTP via tunnel"),
@@ -50,7 +53,7 @@ object Diagnostics {
         host: String = TunnelConfig.SOCKS_HOST,
         port: Int = TunnelConfig.SOCKS_PORT,
     ): Boolean = withContext(Dispatchers.IO) {
-        resetChecks()
+        resetChecks(host, port)
         DiagnosticsLog.i(TAG, "Starting connectivity self-test…")
 
         // 1. Port open

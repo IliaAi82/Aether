@@ -7,6 +7,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Split tunneling needs to list the device's launchable apps so the user
+         can pick which apps to include/exclude from the tunnel. We only query
+         launcher-visible apps (not QUERY_ALL_PACKAGES), which keeps Play policy
+         happy and avoids the sensitive all-packages permission. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".AetherApp"
         android:allowBackup="false"
