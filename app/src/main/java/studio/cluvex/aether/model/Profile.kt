@@ -86,7 +86,10 @@ data class ConnectionProfile(
         val args = mutableListOf<String>()
 
         when (protocol) {
-            Protocol.AUTO -> { /* engine default (MASQUE) */ }
+            // AUTO no longer reaches the engine: Smart Auto (core/SmartAuto.kt)
+            // fingerprints the network's DPI and resolves AUTO to a concrete,
+            // tuned protocol BEFORE launch. Kept only for exhaustiveness.
+            Protocol.AUTO -> { /* resolved by SmartAuto before launch */ }
             Protocol.MASQUE -> args += "--masque"
             Protocol.WIREGUARD -> args += "--wg"
             Protocol.GOOL -> args += "--gool"

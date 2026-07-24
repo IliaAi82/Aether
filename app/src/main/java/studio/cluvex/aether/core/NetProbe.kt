@@ -7,8 +7,15 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import kotlin.concurrent.thread
 
 /** Public IP + country as reported by a geolocation endpoint. */
 data class IpInfo(val ip: String, val countryCode: String?)
@@ -129,6 +136,50 @@ object NetProbe {
         return null
     }
 
+
+    /**
+     * SPEED FIX: races ALL geolocation providers through the proxy in
+     * PARALLEL and returns the first success. The serial fallback chain in
+     * [fetchIpInfoViaSocks] burns up to one full timeout per filtered
+     * provider — and which provider is filtered/slow varies per operator and
+     * region (DPI variance), so some users waited tens of seconds before the
+     * provider that actually works on their network was even tried. The race
+     * always completes as fast as the FASTEST provider for the current user.
+     */
+    fun fetchIpInfoViaSocksRaced(
+        socksHost: String,
+        socksPort: Int,
+        timeoutMs: Int = 6000,
+    ): IpInfo? {
+        val winner = AtomicReference<IpInfo?>(null)
+        val remaining = AtomicInteger(GEO_PROVIDERS.size)
+        val done = CountDownLatch(1)
+        for (p in GEO_PROVIDERS) {
+            thread(isDaemon = true, name = "geo-race-${p.host}") {
+                val info = runCatching {
+                    socks5Connect(socksHost, socksPort, p.host, p.port, useDomain = p.hostIsDomain, timeoutMs).use { s ->
+                        val io = if (p.tls) tlsWrap(s, p.host, p.port, timeoutMs) else s
+                        parseIpInfo(httpGet(io, p.host, p.path))
+                    }
+                }.onFailure {
+                    DiagnosticsLog.d("netprobe", "raced geo ${p.host} failed: ${it.message}")
+                }.getOrNull()
+                if (info != null) {
+                    val refined = runCatching {
+                        refineCountry(info, p) { host, port ->
+                            socks5Connect(socksHost, socksPort, host, port, useDomain = true, timeoutMs)
+                        }
+                    }.getOrDefault(info)
+                    if (winner.compareAndSet(null, refined)) done.countDown()
+                }
+                if (remaining.decrementAndGet() == 0) done.countDown()
+            }
+        }
+        // Small headroom over the per-connection timeout for TLS + HTTP I/O.
+        done.await(timeoutMs.toLong() + 4_000L, TimeUnit.MILLISECONDS)
+        return winner.get()
+    }
+
     /** Wraps an already-connected socket in TLS (SNI = [host]). */
     private fun tlsWrap(socket: Socket, host: String, port: Int, timeoutMs: Int): Socket {
         // getDefault() is statically typed as the plain SocketFactory, which
@@ -137,6 +188,16 @@ object NetProbe {
         val ssl = factory.createSocket(socket, host, port, true) as SSLSocket
         ssl.soTimeout = timeoutMs
         ssl.startHandshake()
+        // SECURITY FIX (MitM): SSLSocket.startHandshake() validates the chain
+        // against the system trust store but does NOT check that the
+        // certificate actually belongs to [host]. Without this check an
+        // attacker holding a valid certificate for ANY domain could intercept
+        // the TLS geolocation probe. Enforce standard hostname verification.
+        val verifier = HttpsURLConnection.getDefaultHostnameVerifier()
+        if (!verifier.verify(host, ssl.session)) {
+            runCatching { ssl.close() }
+            throw SSLPeerUnverifiedException("Certificate does not match host $host (possible MitM)")
+        }
         return ssl
     }
 
@@ -197,12 +258,14 @@ object NetProbe {
     fun fetchIpInfoViaSocksWithRetry(
         socksHost: String,
         socksPort: Int,
-        attempts: Int = 8,
-        delayMs: Long = 3000,
-        timeoutMs: Int = 9000,
+        // SPEED FIX: raced providers + 1 s pacing instead of serial providers
+        // + 3 s pacing — same total patience, far lower time-to-first-answer.
+        attempts: Int = 12,
+        delayMs: Long = 1000,
+        timeoutMs: Int = 6000,
     ): IpInfo? {
         repeat(attempts) { i ->
-            fetchIpInfoViaSocks(socksHost, socksPort, timeoutMs)?.let { return it }
+            fetchIpInfoViaSocksRaced(socksHost, socksPort, timeoutMs)?.let { return it }
             if (i < attempts - 1) {
                 try {
                     Thread.sleep(delayMs)

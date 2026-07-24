@@ -42,6 +42,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -225,7 +226,8 @@ private fun EndpointRow(label: String, value: String) {
             )
             Text(
                 text = value,
-                style = MaterialTheme.typography.bodyLarge,
+                // BiDi fix: ip:port must always render LTR, even in RTL locale.
+                style = MaterialTheme.typography.bodyLarge.copy(textDirection = TextDirection.Ltr),
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.primary,

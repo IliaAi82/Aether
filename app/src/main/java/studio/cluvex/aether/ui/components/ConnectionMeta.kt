@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -99,7 +100,10 @@ private fun IpBadge(
             ) { shown ->
                 Text(
                     text = shown,
-                    style = MaterialTheme.typography.titleSmall,
+                    // BiDi fix: "104.28.197.15" + country flag is LTR technical
+                    // text; in the Persian (RTL) locale the BiDi algorithm
+                    // reordered the digits/dots. Pin the direction to LTR.
+                    style = MaterialTheme.typography.titleSmall.copy(textDirection = TextDirection.Ltr),
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center,

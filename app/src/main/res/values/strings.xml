@@ -6,7 +6,7 @@
     <string name="advanced">Advanced settings</string>
 
     <string name="protocol">Protocol</string>
-    <string name="protocol_auto">Auto</string>
+    <string name="protocol_auto">Smart</string>
     <string name="protocol_masque">MASQUE</string>
     <string name="protocol_wireguard">WireGuard</string>
     <string name="protocol_gool">WARP×2</string>
@@ -149,4 +149,21 @@
     <string name="apps_loading">Loading apps\u2026</string>
     <string name="section_transport">Transport &amp; anti-DPI</string>
     <string name="section_routing">Routing</string>
+
+    <!-- Readiness gating + settings reset (v1.2.1) -->
+    <string name="state_verifying">Verifying connection…</string>
+    <string name="state_analyzing">Analyzing your network (Smart mode)…</string>
+    <string name="err_auto_failed">Smart mode tried every strategy, but none could connect on this network. Try picking a protocol manually.</string>
+    <string name="err_selftest">Tunnel started, but the end-to-end self-test failed. Please try again.</string>
+    <string name="section_reset">Reset</string>
+    <string name="reset_settings">Reset all settings to defaults</string>
+    <string name="reset_done">Settings restored to defaults</string>
+
+    <!-- In-app updater (v1.2.1) -->
+    <string name="update_available">Version %1$s is available</string>
+    <string name="update_action">Update</string>
+    <string name="update_downloading">Downloading update\u2026 %1$d%%</string>
+    <string name="update_failed">Update download failed. Please try again.</string>
+    <string name="update_allow_install">Allow Aether to install updates, then tap Update again.</string>
+    <string name="update_dismiss">Later</string>
 </resources>

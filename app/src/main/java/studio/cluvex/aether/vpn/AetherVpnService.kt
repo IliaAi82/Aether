@@ -24,9 +24,11 @@ import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.ProfileCodec
 import studio.cluvex.aether.core.HevTunnel
 import studio.cluvex.aether.core.ShareBridge
+import studio.cluvex.aether.core.SmartAuto
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
+import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.SplitMode
 import java.io.File
 
@@ -81,8 +83,71 @@ class AetherVpnService : VpnService() {
 
     private suspend fun connectFlow(profile: ConnectionProfile) {
         DiagnosticsLog.clear()
+        // STALE-CIRCLES ROOT-CAUSE FIX: the four self-test circles were only
+        // reset inside Diagnostics.run(), which starts AFTER the engine has
+        // launched AND finished its endpoint scan — so on a reconnect the
+        // previous session's green circles sat on screen for the entire scan
+        // and appeared to "reset late". Reset them the INSTANT a new connect
+        // starts, so the panel always reflects the current attempt on time.
+        Diagnostics.resetChecks()
         DiagnosticsLog.i(TAG, "Connect requested — protocol=${profile.protocol} scan=${profile.scanMode} ip=${profile.ipVersion}")
 
+        val resolved: ConnectionProfile =
+            if (profile.protocol == Protocol.AUTO) {
+                connectSmartAuto(profile)
+            } else {
+                connectAttempt(profile, profile.connectTimeoutMs())
+                profile
+            }
+
+        AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
+        updateNotification(getString(R.string.state_connected))
+        DiagnosticsLog.i(TAG, "All checks passed — tunnel is ready.")
+
+        superviseEngine(resolved)
+    }
+
+    /**
+     * SMART AUTO (root-cause rework of the broken Auto protocol): fingerprint
+     * the network's DPI first (see [SmartAuto]), then walk an ordered ladder
+     * of concrete strategies — protocol + obfuscation + the IP ranges that
+     * actually answered on THIS network — until one passes the full 4-step
+     * self-test. Returns the strategy that won so the supervisor restarts the
+     * engine with the SAME working configuration.
+     */
+    private suspend fun connectSmartAuto(userProfile: ConnectionProfile): ConnectionProfile {
+        AetherController.setState(ConnectionState.Launching)
+        updateNotification(getString(R.string.state_analyzing))
+        val fingerprint = SmartAuto.fingerprint(this)
+        val plan = SmartAuto.buildPlan(userProfile, fingerprint)
+        var lastError: Exception? = null
+        plan.forEachIndexed { index, candidate ->
+            DiagnosticsLog.i(TAG, "Smart mode: attempt ${index + 1}/${plan.size} → ${candidate.label}")
+            try {
+                connectAttempt(candidate.profile, candidate.timeoutMs)
+                DiagnosticsLog.i(TAG, "Smart mode: connected using ${candidate.label}")
+                return candidate.profile
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                DiagnosticsLog.w(
+                    TAG,
+                    "Smart mode: ${candidate.label} failed (${e.message}) — moving to the next strategy.",
+                )
+                cleanupNativeOnly()
+                Diagnostics.resetChecks()
+            }
+        }
+        throw IllegalStateException(getString(R.string.err_auto_failed), lastError)
+    }
+
+    /**
+     * One full connect attempt with a CONCRETE protocol: launch engine, wait
+     * for SOCKS5, bring up TUN/proxy, and gate on the 4-step self-test.
+     * Throws on any failure; the caller decides whether to retry differently.
+     */
+    private suspend fun connectAttempt(profile: ConnectionProfile, timeoutMs: Long) {
         AetherController.setState(ConnectionState.Launching)
         updateNotification(getString(R.string.state_launching))
         DiagnosticsLog.i(TAG, "Launching engine (libaether.so)…")
@@ -90,10 +155,8 @@ class AetherVpnService : VpnService() {
 
         AetherController.setState(ConnectionState.Connecting)
         updateNotification(getString(R.string.state_connecting))
-        // Timeout MUST match the scan mode: a THOROUGH scan legitimately needs
-        // ~250s to select an endpoint before the engine opens SOCKS, so a fixed
-        // 150s limit aborted every THOROUGH connection mid-scan.
-        val timeoutMs = profile.connectTimeoutMs()
+        // Timeout comes from the caller: the profile's scan-mode budget for a
+        // direct connect, or the per-candidate budget in the Smart Auto ladder.
         DiagnosticsLog.i(
             TAG,
             "Waiting for SOCKS5 on $SOCKS_HOST:$SOCKS_PORT… (scan=${profile.scanMode}, timeout=${timeoutMs / 1000}s)",
@@ -142,25 +205,31 @@ class AetherVpnService : VpnService() {
             if (profile.lanShare) ShareBridge.start(localOnly = false)
         }
 
-        AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
-        updateNotification(getString(R.string.state_connected))
+        // GATING FIX: the app used to report Connected the moment the TUN /
+        // proxy was up while the 4-step self-test still ran in the background —
+        // users saw "Connected" long before the tunnel could actually carry
+        // traffic (and before the IP + flag appeared). The state is now held at
+        // Verifying, and Connected is reported ONLY after all four checks pass,
+        // so Connected == genuinely ready to browse.
+        AetherController.setState(ConnectionState.Verifying)
+        updateNotification(getString(R.string.state_verifying))
         DiagnosticsLog.i(
             TAG,
-            if (profile.proxyMode) "Proxy started. Running end-to-end self-test…"
-            else "TUN + hev tunnel started. Running end-to-end self-test…",
+            if (profile.proxyMode) "Proxy started. Verifying end-to-end connectivity…"
+            else "TUN + hev tunnel started. Verifying end-to-end connectivity…",
         )
 
-        // Auto-run the connectivity self-test so the log panel immediately shows
-        // whether traffic actually flows (and if not, exactly which stage fails).
         // In proxy mode, test THROUGH the shared SOCKS5 listener — the exact
         // endpoint external apps connect to — so a dead bridge can no longer
         // hide behind a passing engine-port (1819) self-test.
         val diagPort =
             if (profile.proxyMode) ShareBridge.socksPort.value ?: SOCKS_PORT
             else SOCKS_PORT
-        scope.launch { runCatching { Diagnostics.run(port = diagPort) } }
-
-        superviseEngine(profile)
+        val healthy = runCatching { Diagnostics.run(port = diagPort) }.getOrDefault(false)
+        if (!healthy) {
+            DiagnosticsLog.e(TAG, "Self-test failed — refusing to report Connected.")
+            throw IllegalStateException(getString(R.string.err_selftest))
+        }
     }
 
     /** Keeps the engine alive; retries with backoff if it dies. */
@@ -184,9 +253,18 @@ class AetherVpnService : VpnService() {
 
             engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile) }
             if (PortProbe.awaitOpen(SOCKS_HOST, SOCKS_PORT, profile.connectTimeoutMs()) { engine?.isAlive() == true }) {
-                attempt = 0
-                AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
-                updateNotification(getString(R.string.state_connected))
+                // Same gate as the initial connect: never claim Connected after
+                // a silent engine restart until traffic really flows again.
+                AetherController.setState(ConnectionState.Verifying)
+                updateNotification(getString(R.string.state_verifying))
+                if (runCatching { Diagnostics.run() }.getOrDefault(false)) {
+                    attempt = 0
+                    AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
+                    updateNotification(getString(R.string.state_connected))
+                } else {
+                    DiagnosticsLog.w(TAG, "Self-test failed after engine restart — retrying.")
+                    engine?.stop()
+                }
             }
         }
     }
@@ -320,6 +398,10 @@ class AetherVpnService : VpnService() {
         runJob?.cancel()
         scope.launch {
             cleanupNativeOnly()
+            // STALE-CIRCLES FIX (part 2): clear the finished session's results
+            // right at disconnect, so the panel never carries green circles
+            // from a dead session into the next connect.
+            Diagnostics.resetChecks()
             AetherController.setState(ConnectionState.Idle)
             AetherTileService.requestUpdate(this@AetherVpnService)
             stopForegroundCompat()

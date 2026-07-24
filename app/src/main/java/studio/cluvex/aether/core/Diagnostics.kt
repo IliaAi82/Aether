@@ -1,6 +1,8 @@
 package studio.cluvex.aether.core
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
@@ -17,6 +19,25 @@ import kotlinx.coroutines.withContext
  * Example: port+handshake+tcp PASS but dns_http FAIL => the tunnel works but
  * DNS (SOCKS5 UDP ASSOCIATE / remote resolution) is broken — the usual reason a
  * WARP-style tunnel "connects but no site loads".
+ *
+ * SPEED (1.2.1 root-cause rework): this self-test is now the GATE for the
+ * Connected state, so every second it wastes is a second the user stares at
+ * "connecting". Three structural fixes cut the readiness time dramatically:
+ *
+ *   1. The TCP and DNS+HTTP checks run CONCURRENTLY. They are independent
+ *      probes of the same proxy; running them back-to-back doubled the
+ *      cold-start wait for no benefit.
+ *   2. Retries fire every 750 ms instead of every 3 s. The engine's inner
+ *      tunnel becomes ready at an unpredictable instant inside the warm-up
+ *      window; a 3 s poll added up to ~3 s of pure detection latency (per
+ *      check!) after the tunnel was already usable.
+ *   3. The DNS+HTTP probe races ALL geolocation providers in parallel
+ *      ([NetProbe.fetchIpInfoViaSocksRaced]) instead of trying them one by
+ *      one. On Iranian networks individual providers are often filtered or
+ *      slow in ways that differ per operator/region (DPI variance), so the
+ *      serial fallback chain could burn 20-30 s of timeouts before reaching
+ *      the provider that actually answers. The race always finishes as fast
+ *      as the FASTEST provider for that user's network.
  */
 object Diagnostics {
     const val C_PORT = "socks_port"
@@ -32,7 +53,9 @@ object Diagnostics {
     // That is a COLD START, not a failure, so give the engine a grace window
     // instead of failing on the very first attempt.
     private const val OUTBOUND_GRACE_MS = 90_000L
-    private const val OUTBOUND_RETRY_DELAY_MS = 3_000L
+    private const val OUTBOUND_RETRY_DELAY_MS = 750L
+    private const val TCP_PROBE_TIMEOUT_MS = 4_000
+    private const val GEO_PROBE_TIMEOUT_MS = 6_000
 
     fun resetChecks(
         host: String = TunnelConfig.SOCKS_HOST,
@@ -48,7 +71,7 @@ object Diagnostics {
         )
     }
 
-    /** Runs all checks sequentially. Safe to call from any coroutine. */
+    /** Runs all checks (steps 3+4 concurrently). Safe to call from any coroutine. */
     suspend fun run(
         host: String = TunnelConfig.SOCKS_HOST,
         port: Int = TunnelConfig.SOCKS_PORT,
@@ -80,24 +103,33 @@ object Diagnostics {
             return@withContext false
         }
 
-        // 3. TCP via proxy (IP literal, no DNS) — retried over a grace window
-        // so the engine's cold start (inner tunnel still handshaking) does not
-        // show up as a scary false FAIL in the panel.
-        DiagnosticsLog.updateCheck(C_TCP, CheckState.RUNNING)
-        var tcp = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80)
+        // 3 + 4. TCP-via-proxy and DNS+HTTP end-to-end — CONCURRENT, each with
+        // its own fast retry loop over the shared cold-start grace window.
         val deadline = System.currentTimeMillis() + OUTBOUND_GRACE_MS
-        while (!tcp && System.currentTimeMillis() < deadline) {
-            DiagnosticsLog.i(TAG, "tcp via proxy not ready yet (engine warming up), retrying…")
-            delay(OUTBOUND_RETRY_DELAY_MS)
-            tcp = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80)
+        val (tcp, info) = coroutineScope {
+            val tcpJob = async {
+                DiagnosticsLog.updateCheck(C_TCP, CheckState.RUNNING)
+                var ok = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80, TCP_PROBE_TIMEOUT_MS)
+                while (!ok && System.currentTimeMillis() < deadline) {
+                    delay(OUTBOUND_RETRY_DELAY_MS)
+                    ok = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80, TCP_PROBE_TIMEOUT_MS)
+                }
+                DiagnosticsLog.updateCheck(C_TCP, if (ok) CheckState.PASS else CheckState.FAIL)
+                DiagnosticsLog.log(TAG, if (ok) LogLevel.INFO else LogLevel.ERROR, "tcp via proxy = $ok")
+                ok
+            }
+            val dnsJob = async {
+                DiagnosticsLog.updateCheck(C_DNS, CheckState.RUNNING)
+                var result = NetProbe.fetchIpInfoViaSocksRaced(host, port, GEO_PROBE_TIMEOUT_MS)
+                while (result == null && System.currentTimeMillis() < deadline) {
+                    delay(OUTBOUND_RETRY_DELAY_MS)
+                    result = NetProbe.fetchIpInfoViaSocksRaced(host, port, GEO_PROBE_TIMEOUT_MS)
+                }
+                result
+            }
+            Pair(tcpJob.await(), dnsJob.await())
         }
-        DiagnosticsLog.updateCheck(C_TCP, if (tcp) CheckState.PASS else CheckState.FAIL)
-        DiagnosticsLog.log(TAG, if (tcp) LogLevel.INFO else LogLevel.ERROR, "tcp via proxy = $tcp")
 
-        // 4. DNS + HTTP end-to-end
-        DiagnosticsLog.updateCheck(C_DNS, CheckState.RUNNING)
-        // Retried as well — remote DNS/HTTP needs the same warm-up window.
-        val info = NetProbe.fetchIpInfoViaSocksWithRetry(host, port)
         val dnsOk = info != null
         DiagnosticsLog.updateCheck(
             C_DNS,
@@ -112,7 +144,8 @@ object Diagnostics {
 
         // The self-test already discovered the real exit IP through the tunnel.
         // Feed it straight into the badge so the UI never has to race a second,
-        // independent lookup right after connect.
+        // independent lookup right after connect — the IP + flag is visible the
+        // INSTANT the app reports Connected.
         if (dnsOk) {
             AetherController.offerTunnelIpInfo(IpEndpoint(info!!.ip, info.countryCode, true))
             AetherController.setIpLoading(false)

@@ -53,6 +53,7 @@ import studio.cluvex.aether.ui.components.ConnectionMeta
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
 import studio.cluvex.aether.ui.components.StatusLine
 import studio.cluvex.aether.ui.components.TrafficPanel
+import studio.cluvex.aether.ui.components.UpdatePrompt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -162,6 +163,10 @@ fun HomeScreen(
                     textAlign = TextAlign.Center,
                 )
 
+                // Telegram-style update banner: renders only when a newer
+                // release exists on GitHub Releases.
+                UpdatePrompt(modifier = Modifier.padding(top = 16.dp))
+
                 Spacer(Modifier.height(48.dp))
 
                 ConnectButton(mode = mode, onClick = onToggleConnection)
@@ -255,6 +260,7 @@ private fun stateTitle(state: ConnectionState): String = when (state) {
     is ConnectionState.Idle -> stringResource(R.string.state_idle)
     is ConnectionState.Launching -> stringResource(R.string.state_launching)
     is ConnectionState.Connecting -> stringResource(R.string.state_connecting)
+    is ConnectionState.Verifying -> stringResource(R.string.state_verifying)
     is ConnectionState.Connected -> stringResource(R.string.state_connected)
     is ConnectionState.Reconnecting -> stringResource(R.string.state_reconnecting)
     is ConnectionState.Disconnecting -> stringResource(R.string.state_disconnecting)

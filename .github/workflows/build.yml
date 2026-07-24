@@ -122,6 +122,29 @@ jobs:
       - name: Build release APKs
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
+      # PLAY-PROTECT SAFEGUARD: never publish an APK that is unsigned or
+      # debug-signed. Throwaway debug certificates (a different one on every
+      # machine/runner) are exactly what makes Google show "Play Protect
+      # hasn't seen an app from this developer before" on install. Also
+      # require the modern v2 signature scheme on every APK.
+      - name: Verify release signature (Play Protect safeguard)
+        run: |
+          set -euo pipefail
+          BT="$(ls -d "${ANDROID_SDK_ROOT}"/build-tools/* | sort -V | tail -n1)"
+          found=0
+          for apk in app/build/outputs/apk/release/*.apk; do
+            [ -f "$apk" ] || continue
+            found=1
+            "${BT}/apksigner" verify --verbose --print-certs "$apk" > /tmp/sig.txt
+            grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" /tmp/sig.txt \
+              || { echo "ERROR: $apk lacks an APK Signature Scheme v2 signature"; exit 1; }
+            if grep -qi "CN=Android Debug" /tmp/sig.txt; then
+              echo "ERROR: $apk is signed with a DEBUG certificate — refusing to publish"; exit 1
+            fi
+            echo "Signature OK: $apk"
+          done
+          [ "$found" -eq 1 ] || { echo "ERROR: no release APKs found to verify"; exit 1; }
+
       # Do not publish an APK that can only run proxy mode. Full VPN mode needs
       # both native cores for every ABI contained in that APK.
       - name: Verify native libraries inside APKs

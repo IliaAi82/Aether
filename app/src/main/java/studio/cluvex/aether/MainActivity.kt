@@ -14,7 +14,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,6 +41,25 @@ class MainActivity : ComponentActivity() {
     // Holds the profile to connect with once VPN consent is granted.
     private var pendingProfile: ConnectionProfile? = null
 
+    // ------------------------------------------------------------------
+    // SCRAMBLED-INPUT FIX (root cause): the UI used to render the settings —
+    // including the ip:port / CIDR text fields — straight from the DataStore
+    // flow while every keystroke was saved asynchronously. Fast typing raced
+    // that disk round-trip: a keystroke was applied on top of a STALE value
+    // that echoed back a moment later, so digits were dropped/reordered
+    // ("127.0.0.1" -> "27.0.0.11") in EVERY locale, English and Persian alike.
+    //
+    // Fix: the UI owns a synchronous in-memory profile state updated
+    // immediately on every change. DataStore is demoted to plain background
+    // persistence: a single collector writes the LATEST snapshot (conflated),
+    // so saves can never interleave or feed stale values back into the UI.
+    // ------------------------------------------------------------------
+    private val uiProfile = MutableStateFlow<ConnectionProfile?>(null)
+    private val profileSaves = MutableSharedFlow<ConnectionProfile>(
+        replay = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == RESULT_OK) {
@@ -52,6 +75,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         profileStore = ProfileStore(applicationContext)
+
+        // Load the persisted profile ONCE as the initial UI state; from then
+        // on the in-memory state is the single source of truth for the UI.
+        // compareAndSet: if the user already changed something before the
+        // initial load finished, never overwrite their edit.
+        lifecycleScope.launch {
+            uiProfile.compareAndSet(null, profileStore.profile.first())
+        }
+        // Single background writer persisting the latest profile snapshot.
+        lifecycleScope.launch {
+            profileSaves.conflate().collect { snapshot -> profileStore.save(snapshot) }
+        }
 
         maybeRequestNotificationPermission()
 
@@ -71,7 +106,9 @@ class MainActivity : ComponentActivity() {
         setContent {
             AetherTheme {
                 val state by AetherController.state.collectAsState()
-                val profile by profileStore.profile.collectAsState(initial = ConnectionProfile())
+                // Synchronous UI profile state (see uiProfile above); null
+                // only until the one-time initial load completes.
+                val profile by uiProfile.collectAsState()
                 val connectedSince by AetherController.connectedSince.collectAsState()
                 val ipInfo by AetherController.ipInfo.collectAsState()
                 val ipLoading by AetherController.ipLoading.collectAsState()
@@ -105,7 +142,7 @@ class MainActivity : ComponentActivity() {
                             while (AetherController.ipInfo.value?.viaTunnel != true &&
                                 System.currentTimeMillis() < deadline
                             ) {
-                                delay(1000L)
+                                delay(250L)
                             }
                             if (AetherController.ipInfo.value?.viaTunnel != true) {
                                 val info = withContext(Dispatchers.IO) {
@@ -139,12 +176,16 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     HomeScreen(
                         state = state,
-                        profile = profile,
+                        profile = profile ?: ConnectionProfile(),
                         connectedSince = connectedSince,
                         ipInfo = ipInfo,
                         ipLoading = ipLoading,
                         onProfileChange = { updated ->
-                            lifecycleScope.launch { profileStore.save(updated) }
+                            // Update the UI synchronously — keystrokes must
+                            // never wait for disk I/O — then persist in the
+                            // background.
+                            uiProfile.value = updated
+                            profileSaves.tryEmit(updated)
                         },
                         onToggleConnection = { toggleConnection(state) },
                     )
@@ -159,7 +200,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         lifecycleScope.launch {
-            val profile = profileStore.profile.first()
+            val profile = uiProfile.value ?: profileStore.profile.first()
             val consent = AetherController.prepare(this@MainActivity)
             if (consent != null) {
                 pendingProfile = profile

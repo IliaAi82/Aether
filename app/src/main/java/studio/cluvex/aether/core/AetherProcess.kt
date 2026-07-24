@@ -1,6 +1,7 @@
 package studio.cluvex.aether.core
 
 import android.util.Log
+import studio.cluvex.aether.BuildConfig
 import studio.cluvex.aether.model.ConnectionProfile
 import java.io.File
 
@@ -42,7 +43,12 @@ class AetherProcess(
             try {
                 proc.inputStream.bufferedReader().useLines { lines ->
                     lines.forEach {
-                        Log.i("aether-engine", it)
+                        // SECURITY FIX: the engine's stdout (endpoints, exit
+                        // IPs, config echo) must not be mirrored to Logcat in
+                        // release builds — Logcat is world-readable via adb and
+                        // ends up in bug reports. The in-app diagnostics panel
+                        // (app-private file) still receives every line below.
+                        if (BuildConfig.DEBUG) Log.i("aether-engine", it)
                         DiagnosticsLog.d("engine", it)
                     }
                 }

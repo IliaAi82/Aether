@@ -1,4 +1,6 @@
 import com.android.build.api.variant.FilterConfiguration.FilterType.ABI
+import java.util.Base64
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -9,6 +11,55 @@ plugins {
 // Human-friendly ABI -> versionCode offset so each split APK gets a unique code.
 val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3)
 
+// ---------------------------------------------------------------------------
+// Release signing (see docs/SIGNING.md).
+//
+// ROOT CAUSE of "App not installed as package conflicts with an existing
+// package": the old build silently fell back to the DEBUG keystore whenever no
+// KEYSTORE_PATH env var was set. Every machine / clean CI runner has a
+// DIFFERENT auto-generated debug key, and Android refuses to install an update
+// whose signature differs from the installed APK — so users had to uninstall
+// first. The fix: sign every release with ONE stable, private keystore.
+//
+// Credential sources, in priority order:
+//   1. keystore.properties in the repo root (local builds; git-ignored).
+//      Create it with:  bash scripts/generate-keystore.sh
+//   2. KEYSTORE_PATH / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
+//      environment variables (CI secrets).
+//   3. The CI keystore persisted in the repo (.github/ci-keystore.jks.b64) —
+//      the exact key CI signs with, so local builds match the published
+//      signature and updates always install in place.
+//
+// NOTE: `Properties` / `Base64` are imported at the top of this file. Never
+// write `java.util.Properties()` inline here — inside build.gradle.kts the
+// `java {}` accessor shadows the `java` package and script compilation fails
+// with "Unresolved reference 'util'".
+// ---------------------------------------------------------------------------
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun signingValue(propKey: String, envKey: String): String? =
+    (keystoreProps.getProperty(propKey) ?: System.getenv(envKey))?.takeIf { it.isNotBlank() }
+
+val releaseStorePath: String? = signingValue("storeFile", "KEYSTORE_PATH")
+val hasReleaseKeystore: Boolean =
+    releaseStorePath != null && rootProject.file(releaseStorePath).exists()
+
+// Source 3: the repo-persisted CI keystore. Decode it once at configuration
+// time so plain local `gradle assembleRelease` produces the SAME signature as
+// the APKs published by GitHub Actions.
+val ciKeystoreB64 = rootProject.file(".github/ci-keystore.jks.b64")
+val useCiKeystore: Boolean = !hasReleaseKeystore && ciKeystoreB64.exists()
+val ciKeystoreFile = rootProject.file("build/ci-release.keystore")
+if (useCiKeystore) {
+    ciKeystoreFile.parentFile.mkdirs()
+    ciKeystoreFile.writeBytes(
+        Base64.getMimeDecoder().decode(ciKeystoreB64.readText().trim()),
+    )
+}
+
 android {
     namespace = "studio.cluvex.aether"
     compileSdk = 35
@@ -17,30 +68,45 @@ android {
         applicationId = "studio.cluvex.aether"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.2.1"
 
         ndk {
             // We ship arm64 (primary) and arm builds.
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
+
+        // "owner/repo" used by the in-app updater to query GitHub Releases.
+        // CI provides GITHUB_REPOSITORY automatically; local builds can pass
+        // -PgithubRepo=owner/repo (the updater is silently disabled when empty).
+        val githubRepo = System.getenv("GITHUB_REPOSITORY")
+            ?: (project.findProperty("githubRepo") as? String ?: "")
+        buildConfigField("String", "GITHUB_REPO", "\"$githubRepo\"")
     }
 
     // Both native cores (libhev-socks5-tunnel.so + libaether.so) are prebuilt by
     // scripts/build-natives.sh into src/main/jniLibs, so there is NO
     // externalNativeBuild / CMake step in the Gradle build.
 
-    // Release signing is driven entirely by environment variables so the same
-    // build works locally and in CI. If no keystore is provided, we fall back
-    // to the debug keystore so the output APKs are always installable.
     signingConfigs {
         create("release") {
-            val storePath = System.getenv("KEYSTORE_PATH")
-            if (!storePath.isNullOrBlank() && file(storePath).exists()) {
-                storeFile = file(storePath)
-                storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
+            // PLAY-PROTECT FIX: sign with the FULL modern scheme chain.
+            // AGP leaves v3 signing OFF by default; a complete v1+v2+v3
+            // signature protects the whole archive from tampering and is
+            // what reputable sideloaded apps ship with.
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+            if (hasReleaseKeystore) {
+                storeFile = rootProject.file(releaseStorePath!!)
+                storePassword = signingValue("storePassword", "KEYSTORE_PASSWORD")
+                keyAlias = signingValue("keyAlias", "KEY_ALIAS")
+                keyPassword = signingValue("keyPassword", "KEY_PASSWORD")
+            } else if (useCiKeystore) {
+                storeFile = ciKeystoreFile
+                storePassword = "aether-ci-keystore"
+                keyAlias = "aether-ci"
+                keyPassword = "aether-ci-keystore"
             }
         }
     }
@@ -53,11 +119,20 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            val storePath = System.getenv("KEYSTORE_PATH")
-            signingConfig = if (!storePath.isNullOrBlank() && file(storePath).exists()) {
+            // PLAY-PROTECT FIX (root cause of the Google Play Protect
+            // "App blocked to protect your device" / "hasn't seen an app
+            // from this developer before" install warning): the old build
+            // silently fell back to the DEBUG key here. Debug certificates
+            // are auto-generated and DIFFERENT on every machine/CI runner,
+            // so to Google every release looked like a brand-new unknown
+            // developer and installs got flagged. A debug-signed release
+            // must never ship again: without a stable keystore the release
+            // build now FAILS FAST (guard below) instead of producing a
+            // flag-magnet APK. See docs/SIGNING.md.
+            signingConfig = if (hasReleaseKeystore || useCiKeystore) {
                 signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug")
+                null
             }
         }
     }
@@ -93,6 +168,28 @@ android {
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+}
+
+// PLAY-PROTECT FIX, part 2: hard gate. If neither a private keystore nor the
+// persisted CI keystore is available, ANY release-producing task fails with a
+// clear message instead of quietly emitting an unsigned/debug-signed APK that
+// Google Play Protect then blocks as coming from an "unknown developer".
+if (!hasReleaseKeystore && !useCiKeystore) {
+    tasks.configureEach {
+        if (name.contains("Release") &&
+            (name.startsWith("assemble") || name.startsWith("package") || name.startsWith("bundle"))
+        ) {
+            doFirst {
+                throw GradleException(
+                    "No stable release keystore configured — refusing to build a " +
+                        "debug-signed release (it triggers the Play Protect install " +
+                        "warning and breaks in-place updates). Run " +
+                        "scripts/generate-keystore.sh, or provide KEYSTORE_* env vars / " +
+                        ".github/ci-keystore.jks.b64. See docs/SIGNING.md."
+                )
+            }
         }
     }
 }

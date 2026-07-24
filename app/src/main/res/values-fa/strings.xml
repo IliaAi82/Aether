@@ -6,7 +6,7 @@
     <string name="advanced">تنظیمات پیشرفته</string>
 
     <string name="protocol">پروتکل</string>
-    <string name="protocol_auto">خودکار</string>
+    <string name="protocol_auto">هوشمند</string>
     <string name="protocol_masque">MASQUE</string>
     <string name="protocol_wireguard">WireGuard</string>
     <string name="protocol_gool">وارپ×۲</string>
@@ -149,4 +149,21 @@
     <string name="apps_loading">در حال بارگذاری برنامه‌ها…</string>
     <string name="section_transport">انتقال و ضد-DPI</string>
     <string name="section_routing">مسیریابی</string>
+
+    <!-- گیت آمادگی + بازنشانی تنظیمات (v1.2.1) -->
+    <string name="state_verifying">در حال بررسی سلامت اتصال…</string>
+    <string name="state_analyzing">در حال تحلیل شبکه (اتصال هوشمند)…</string>
+    <string name="err_auto_failed">اتصال هوشمند همهٔ راهبردها را امتحان کرد اما هیچ‌کدام روی این شبکه متصل نشد. یک پروتکل را دستی انتخاب کنید.</string>
+    <string name="err_selftest">تونل برقرار شد اما تست انتهابهانتها ناموفق بود. دوباره تلاش کنید.</string>
+    <string name="section_reset">بازنشانی</string>
+    <string name="reset_settings">بازگرداندن همهٔ تنظیمات به پیش‌فرض</string>
+    <string name="reset_done">تنظیمات به حالت اولیه برگشت</string>
+
+    <!-- آپدیت داخل برنامه (v1.2.1) -->
+    <string name="update_available">نسخهٔ جدید %1$s آماده است</string>
+    <string name="update_action">آپدیت</string>
+    <string name="update_downloading">در حال دانلود آپدیت… %1$d%%</string>
+    <string name="update_failed">دانلود آپدیت ناموفق بود. دوباره تلاش کنید.</string>
+    <string name="update_allow_install">اجازهٔ نصب آپدیت به Aether را فعال کنید و دوباره «آپدیت» را بزنید.</string>
+    <string name="update_dismiss">بعداً</string>
 </resources>

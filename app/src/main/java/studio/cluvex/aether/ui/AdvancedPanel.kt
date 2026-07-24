@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -25,7 +26,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.ShareBridge
@@ -53,6 +54,7 @@ import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.ui.components.AppPickerDialog
 import studio.cluvex.aether.ui.components.DropdownSelector
+import studio.cluvex.aether.ui.components.LtrOutlinedTextField
 import studio.cluvex.aether.ui.components.SegmentedSelector
 
 /**
@@ -74,6 +76,7 @@ fun AdvancedPanel(
 ) {
     var expanded by remember { mutableStateOf(startExpanded) }
     var showAppPicker by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val arrowRotation by animateFloatAsState(if (expanded) 180f else 0f, tween(300), label = "arrow")
 
     Card(
@@ -168,7 +171,10 @@ fun AdvancedPanel(
                     )
                     if (profile.endpointMode == EndpointMode.MANUAL_PEER) {
                         Spacer(Modifier.height(12.dp))
-                        OutlinedTextField(
+                        // BiDi fix: ip:port is LTR technical text — a plain
+                        // OutlinedTextField scrambles typed digits in the RTL
+                        // (Persian) locale. LtrOutlinedTextField pins LTR.
+                        LtrOutlinedTextField(
                             value = profile.manualPeer,
                             onValueChange = { onProfileChange(profile.copy(manualPeer = it)) },
                             enabled = enabled,
@@ -180,7 +186,9 @@ fun AdvancedPanel(
                     }
                     if (profile.endpointMode == EndpointMode.MANUAL_RANGE) {
                         Spacer(Modifier.height(12.dp))
-                        OutlinedTextField(
+                        // BiDi fix: CIDR ranges are LTR technical text — this is
+                        // the exact field where typed digits appeared shuffled.
+                        LtrOutlinedTextField(
                             value = profile.manualRange,
                             onValueChange = { onProfileChange(profile.copy(manualRange = it)) },
                             enabled = enabled,
@@ -297,6 +305,23 @@ fun AdvancedPanel(
                                 ),
                             )
                         }
+                    }
+
+                    // ---------- Reset ----------
+                    SectionHeader(stringResource(R.string.section_reset))
+                    OutlinedButton(
+                        onClick = {
+                            // Restore every setting to factory defaults. Persisted
+                            // immediately through the normal onProfileChange path
+                            // (DataStore), exactly like any other settings change.
+                            onProfileChange(ConnectionProfile())
+                            Toast.makeText(context, R.string.reset_done, Toast.LENGTH_SHORT).show()
+                        },
+                        enabled = enabled,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Rounded.RestartAlt, contentDescription = null)
+                        Text(text = "  " + stringResource(R.string.reset_settings))
                     }
                 }
             }
@@ -458,7 +483,8 @@ private fun ProxyEndpointRow(label: String, value: String) {
             )
             Text(
                 text = value,
-                style = MaterialTheme.typography.bodyLarge,
+                // BiDi fix: ip:port must always render LTR, even in RTL locale.
+                style = MaterialTheme.typography.bodyLarge.copy(textDirection = TextDirection.Ltr),
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurface,
             )

@@ -28,7 +28,9 @@ object PortProbe {
         host: String,
         port: Int,
         totalTimeoutMs: Long,
-        intervalMs: Long = 1000,
+        // SPEED FIX: 300 ms polling detects the engine's port up to ~700 ms
+        // sooner than the old 1 s poll; a localhost TCP connect is ~free.
+        intervalMs: Long = 300,
         isEngineAlive: () -> Boolean = { true },
     ): Boolean {
         val deadline = System.currentTimeMillis() + totalTimeoutMs
