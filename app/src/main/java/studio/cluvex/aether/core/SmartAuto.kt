@@ -147,7 +147,7 @@ object SmartAuto {
         // resort below still covers the full built-in ranges.
         val reachable = fp.edgeLatencyMs.filterValues { it >= 0 }.entries.sortedBy { it.value }
         val bestRanges = reachable.take(2).joinToString(", ") { it.key }
-        // NEVER override an endpoint the user pinned manually.
+        // NEVER override an endpoint the user pinned manually in Settings.
         val keepUserEndpoint = user.endpointMode != EndpointMode.AUTO
 
         fun cand(

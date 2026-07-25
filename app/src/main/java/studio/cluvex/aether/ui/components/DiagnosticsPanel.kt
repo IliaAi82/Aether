@@ -62,7 +62,6 @@ import studio.cluvex.aether.core.LogLine
 fun DiagnosticsPanel(modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(false) }
     val checks by DiagnosticsLog.checks.collectAsState()
-    val lines by DiagnosticsLog.lines.collectAsState()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
@@ -139,7 +138,7 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier) {
 
                     Spacer(Modifier.height(12.dp))
 
-                    LogConsole(lines = lines)
+                    LogConsole()
                 }
             }
         }
@@ -195,7 +194,13 @@ private fun CheckRow(check: ComponentCheck) {
 }
 
 @Composable
-private fun LogConsole(lines: List<LogLine>) {
+private fun LogConsole() {
+    // 1.2.2 UI-SPEED FIX: the log list was collected by the panel itself, so
+    // every engine line (hundreds during a scan) recomposed the whole
+    // diagnostics card — and the whole drawer around it — even while the log
+    // console was collapsed and invisible. The console is only composed when
+    // it is open, and it is the only thing subscribed to the log now.
+    val lines: List<LogLine> = DiagnosticsLog.lines.collectAsState().value
     val scroll = rememberScrollState()
     Box(
         modifier = Modifier

@@ -36,7 +36,6 @@ class AetherProcess(
         process = proc
 
         DiagnosticsLog.i("engine", "Spawned ${bin.name} ${profile.toArgs().joinToString(" ")}")
-
         // Drain stdout/stderr so a full pipe never blocks the engine, mirroring
         // every line into both logcat and the in-app diagnostics panel.
         Thread({
@@ -61,8 +60,67 @@ class AetherProcess(
 
     fun isAlive(): Boolean = process?.isAlive == true
 
+    /**
+     * Blocks until the engine exits or [timeoutMs] elapses; returns true if it
+     * exited.
+     *
+     * 1.2.2 CPU FIX: the VpnService supervisor used to poll `isAlive()` every
+     * two seconds for the whole life of the tunnel. That is thousands of
+     * pointless wake-ups per session on a connection that is perfectly
+     * healthy, and it keeps the CPU out of deep idle. `Process.waitFor` parks
+     * the supervisor coroutine on the OS instead: it costs nothing while the
+     * engine is running and returns the moment the engine actually dies, so
+     * crash detection is FASTER than the old poll while using less power.
+     *
+     * The bounded overload is used so the supervisor still re-checks its own
+     * cancellation state periodically.
+     */
+    suspend fun awaitExit(timeoutMs: Long): Boolean =
+        runCatching {
+            // DISCONNECT-LATENCY ROOT CAUSE (fixed): `Process.waitFor` is a
+            // BLOCKING java call. Coroutine cancellation cannot interrupt a
+            // blocking call, so when the user tapped disconnect the service
+            // sat inside this wait until the whole 60 s window expired — which
+            // is exactly the 30–50 s "Disconnecting…" freeze. `runInterruptible`
+            // maps cancellation onto a real thread interrupt, so `waitFor`
+            // throws immediately and the teardown continues within
+            // milliseconds — while still costing zero polling when idle.
+            kotlinx.coroutines.runInterruptible(kotlinx.coroutines.Dispatchers.IO) {
+                process?.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) ?: true
+            }
+        }.getOrDefault(false)
+
+    /**
+     * Stops the engine and does not return until the OS has really reaped it.
+     *
+     * 1.2.2 PROTOCOL-SWITCH FIX: this used to be a fire-and-forget
+     * `destroy()`. `destroy()` only *asks* the process to exit, so the old
+     * engine was often still alive — and still holding the local SOCKS5
+     * listener on 127.0.0.1:1819 — while the next connect was already
+     * spawning a new engine. The new engine then either failed to bind or the
+     * app's port probe saw the DYING engine's socket and declared "port is
+     * up" far too early, which is exactly why switching protocols felt like it
+     * hung for tens of seconds and then had to retry. We now wait for the
+     * process to actually exit and escalate to SIGKILL if it does not.
+     */
     fun stop() {
-        process?.destroy()
+        val proc = process ?: return
         process = null
+        runCatching {
+            proc.destroy()
+            // Give the engine a very short, fixed grace period, then SIGKILL.
+            // Deliberately short: the user is waiting for the button to turn
+            // grey, and the next connect independently waits for the local
+            // proxy port to be released, so nothing depends on a long wait
+            // here.
+            if (!proc.waitFor(GRACEFUL_EXIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                proc.destroyForcibly()
+            }
+        }
+    }
+
+    private companion object {
+        /** How long a polite SIGTERM gets before we escalate to SIGKILL. */
+        const val GRACEFUL_EXIT_MS = 250L
     }
 }

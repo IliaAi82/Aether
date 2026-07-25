@@ -1,45 +1,93 @@
-## What's new in v1.2.1
+## Aether v1.2.2
 
-This release makes connecting **smarter, faster and more honest**, fixes Persian-locale text bugs, and hardens security.
+Engine maintenance moves into the build pipeline, the in-app updater is gone, the unreliable country picker is gone and endpoint selection is back in the engine’s hands, and 1.2.1's performance and compatibility problems are fixed at the root.
 
-- **Auto mode rebuilt from the root and renamed to "Smart"** («هوشمند» in Persian) — the old Auto passed **no protocol flag** to the engine and simply hoped the engine default would work: no intelligence, no fallback. On filtered networks it hung right there, while picking a protocol manually worked. Smart mode now acts like an engineer:
-  - **Network DPI discovery before the engine even starts** — a few seconds of parallel probes on your carrier's real path: UDP health (real DNS queries to 1.1.1.1 / 8.8.8.8), an SNI-DPI test (full TLS handshake with SNI toward Cloudflare), reachability + latency of each WARP IP range over TCP, and operator detection (name + SIM country + mobile/Wi‑Fi — with no extra permissions).
-  - **The network is classified into four classes**: open / SNI-filtering / UDP-throttled / hostile.
-  - **A strategy ladder per class** — an ordered list of "protocol + obfuscation (noize) level + fragment/ECH + only the IP ranges that actually answered", from most to least likely, plus one full last-resort attempt.
-  - **Step-by-step connect** — every strategy gets a real connection validated by the same 4-point health check; the first one that passes wins, and its config is kept for automatic reconnects.
-  - Live-range selection keeps each attempt fast; light obfuscation is applied automatically on Iranian mobile networks; a manually set endpoint/range is **never overwritten**; and every probe result and decision is written to the log so it's fully transparent why Smart picked what it picked. A new **"Analyzing your network (Smart mode)…"** status was added to the UI.
-- **"Connected" now means connected** — the app stays in a new **"Verifying connection…"** state until all four health checks (port, handshake, internet, IP) pass. No more being told you're connected while nothing actually loads yet.
-- **IP & flag appear much faster** — the three IP-lookup services are now queried **in parallel** (the fastest one on *your* network wins) instead of one-by-one, the self-test checks run concurrently, and retry delays are shorter. This especially helps networks where DPI slows some providers down.
-- **Fixed digits getting scrambled** while typing in the custom IP-range and manual endpoint fields (and everywhere `ip:port` is displayed) when the phone language is Persian — a right-to-left (BiDi) text issue, fixed at the root.
-- **New Reset button** at the bottom of advanced settings — one tap restores every setting to its defaults.
-- **Security hardening** (full audit report in `docs/SECURITY_AUDIT.md`): TLS hostname verification on the built-in probes (blocks man-in-the-middle), engine output no longer mirrored to Logcat in release builds, cleartext HTTP denied app-wide, stricter backup rules.
-- **In-app updates (Telegram-style) — beta** — when a new version is published on GitHub Releases, the app itself shows an "Update" banner on the home screen; one tap downloads the right APK for your device and opens the installer. No need to visit GitHub. **This feature is currently in beta (experimental)** and is still being stabilized.
-- **Proper release signing — beta** — every build is signed with one stable key (the repo's CI keystore, or your own via `keystore.properties` / repo Secrets; see `docs/SIGNING.md`), so updates keep installing right on top with no uninstall. If you're coming from a build signed with a *different* key, uninstall once — it's permanent from then on. **The signing mechanism is likewise in beta (experimental)** while it is validated across devices.
+**⚡ You can install this directly over 1.2.1 — no uninstall, and your settings are kept.**
+
+### 🔄 Automatic engine (core) upgrades in CI
+- Every build checks the official [Aether Core repo](https://github.com/CluvexStudio/Aether) and upgrades the vendored engine automatically when a newer release exists. The stable reference is **v1.4**.
+- The app's own engine patches are preserved across upgrades; upstream conflicts produce a loud warning instead of silent data loss.
+- If GitHub is unreachable the build keeps the current engine and continues — the sync only moves forward, never backwards.
+- After a successful upgrade CI edits the README changelog itself and commits it back, so docs can never drift from the shipped engine. The core version is now visible in the About panel.
+
+### 🗑️ In-app update system removed
+> For the security of our users, for complete transparency, and to guarantee the authenticity of the code they receive, the direct in-app update capability has been removed. From now on, all updates will be available exclusively from the project's official GitHub Release page, officially signed — preventing any unwanted download from unknown sources.
+
+The update checker, the in-app update card, the `REQUEST_INSTALL_PACKAGES` permission and the `FileProvider` are all deleted. **The app can no longer download or install anything.**
+
+### 🌐 No server/location list — the engine picks the endpoint itself
+
+Aether has no country list and no server list, and it never had a real one. It connects you to **Cloudflare's WARP network**, whose addresses are **anycast**: the very same IP is announced from every Cloudflare datacenter at once, so the datacenter that answers is decided by your operator's routing — not by the app. A country menu in the app could only ever be a label; it could not move you to that country. That is why the picker (and its whole catalogue) was removed in this release.
+
+- **The engine chooses the endpoint.** It scans its built-in WARP ranges, measures them and connects to whichever edge answers best on your network at that moment.
+- **Smart Auto still does its real job:** fingerprinting the network's DPI and choosing the protocol / obfuscation ladder.
+- **Your own settings still win.** A hand-typed peer (`ip:port`) or a custom scan range in Settings pins the scan exactly as before, and quick reconnect works normally.
+- **No forced IP filtering.** Blocking exits by country is not reliable either — an experimental "never Iran" gate rejected almost every edge on real Iranian networks and left the app retrying until it gave up, so it was removed. Connection reliability comes first.
+
+### ⚡ Performance, compatibility & signature
+- **Memory leak fixed**: the diagnostics log is now a bounded 800-line ring buffer with throttled UI updates, batched background disk writes and a 512 KiB rotating file.
+- **Much lower idle CPU**: the VPN supervisor blocks on the engine process instead of polling every two seconds — crash detection is faster *and* cheaper.
+- No more busy-wait after connect; geolocation probes share one low-priority thread pool; port probing backs off adaptively.
+- **v2rayNG conflict fixed**: LAN-share moved from 10808/10809 to **10810/10811**, and known neighbours (v2rayNG, Clash, Psiphon, Privoxy) are detected and named in any port error.
+- **Signature fixed at the root**: CI pins the signer's SHA-256 fingerprint and **fails the build** if it ever changes, guaranteeing over-install from 1.2.1 works.
+
+- **Switching protocol no longer stalls the app.** Disconnecting and then connecting on a different protocol felt like it "took forever to start", on every protocol except Smart. Two real bugs caused it. First, stopping the engine was fire-and-forget: the app sent the process a polite terminate signal and immediately moved on, so the old engine was often still alive and still holding the local SOCKS5 port `127.0.0.1:1819` while the next one was already starting — the new attempt either could not bind or verified itself against the dying socket and had to time out and retry. The engine is now really waited for (and force-killed if it does not exit), and a new attempt waits for the local port to be released before it starts. Second, a connect tapped while the previous session was still winding down was **silently dropped** ("a run is already active → return"), which is exactly the "I pressed connect and nothing happened for a while" symptom; the new session now takes ownership, joins the old one, tears it down and starts immediately.
+- **MASQUE (and any hand-picked protocol) gets a real second chance.** A protocol chosen by hand used to get exactly **one** attempt with the full scan budget of the selected scan mode — up to 150 s on Balanced, 300 s on Thorough — and no fallback, while Smart mode walks a ladder of short, hardened attempts. On a network where UDP/QUIC is throttled that meant staring at "Connecting" for minutes and then failing. Now the chosen protocol runs a capped first pass exactly as configured, and if that fails the **same** protocol is retried with anti-DPI hardening (obfuscation on, plus HTTP/2, TLS fragmentation and ECH for MASQUE) on the full budget. The protocol you picked is never swapped for another one.
+- **Disconnect is instant again (30–50 s freeze fixed at the root).** Tapping disconnect could leave the button on "Disconnecting…" for up to a minute on every protocol. Root cause: the service supervisor parks on the engine process with `Process.waitFor`, which is a **blocking** Java call — and coroutine cancellation cannot interrupt a blocking call. The teardown asked the session to stop and then *waited for it to finish before killing anything*, so it sat inside that wait until the whole 60-second window expired (the log shows the engine being stopped exactly 60.0 s after connect, not when the button was tapped). Two changes fix it for good: the engine wait is now interruptible, so cancellation aborts it in milliseconds, and the teardown order was inverted — cancel, kill the natives immediately, flip the UI to idle, and only *then* reap the finished coroutine off the critical path. Reconnecting on another protocol follows the same order, so it no longer inherits the old session’s wait either. Stopping the engine also escalates to a hard kill after 250 ms instead of waiting seconds.
+- **The aurora animation is gone; the background is now a flat colour.** Three large radial gradients were being composited full-screen behind every screen for as long as the app was open. Even after the redraw rate was capped it still cost real GPU and CPU work on every frame budget the UI needed. The backdrop is now a single static fill that never invalidates — no animation runs behind the UI any more, so menus, sheets and the connect screen get the whole frame budget.
+- **The main menu no longer runs while it is closed.** Android's navigation drawer composes its contents even when the drawer is shut, so the diagnostics, sharing, advanced and about cards were live at all times, recomposing on every settings change and on every engine log line behind a panel nobody was looking at. They are now built only when the drawer is actually open.
+- **The diagnostics log only subscribes while it is open.** During a scan the engine emits hundreds of log lines; each one used to recompose the whole diagnostics card — and the drawer around it — even with the log console collapsed. Only the open console listens now.
+- **The Advanced sheet opens instantly.** Its ~40 controls used to be laid out in the same frame the sheet starts its slide-in animation, which visibly stuttered the opening. The sheet now animates in first and fills itself immediately afterwards.
+
+### 🔒 Security audit
+This project underwent a **100% line-by-line security audit** for 1.2.2 and the critical vulnerabilities identified were remediated per mobile audit standards — secrets, cryptography/MitM, DNS/IPv6/real-IP leaks, tunnel bypass, local storage, permissions & manifest, logging, dependencies and network config. Full report: `docs/SECURITY_AUDIT_1.2.2.md`.
 
 ---
 
-## تازه‌های نسخهٔ ۱.۲.۱
+<div dir="rtl">
 
-این نسخه اتصال را **هوشمندتر، سریع‌تر و صادقانه‌تر** می‌کند، باگ‌های متنیِ زبان فارسی را رفع می‌کند و امنیت را بالا می‌برد.
+## نسخهٔ ۱.۲.۲ Aether
 
-- **حالت Auto از ریشه بازسازی شد و به «Smart / هوشمند» تغییر نام داد** — حالت Auto قبلاً هیچ فلگ پروتکلی به موتور نمی‌داد و صرفاً امیدوار بود پیش‌فرض موتور کار کند — نه هوشی داشت، نه fallback — و روی شبکه‌های فیلترشده همان‌جا گیر می‌کرد؛ در حالی که انتخاب دستی پروتکل جواب می‌داد. حالا حالت «هوشمند» مثل یک مهندس عمل می‌کند:
-  - **کشف DPI شبکه قبل از اجرای موتور** — چند پراب موازیِ چندثانیه‌ای روی مسیر واقعی اپراتور: سلامت UDP (کوئری واقعی DNS به 1.1.1.1 و 8.8.8.8)، تست SNI-DPI (هندشیک کامل TLS با SNI به سمت کلادفلر)، سنجش در دسترس بودن + تأخیر تک‌تک رنج‌های WARP با اتصال TCP، و شناسایی اپراتور (نام + کد کشور سیم‌کارت + موبایل/وای‌فای، بدون هیچ مجوز اضافه).
-  - **طبقه‌بندی شبکه در چهار کلاس**: باز / فیلترینگ SNI / خفه‌کردن UDP / متخاصم.
-  - **نردبان راهبردها** — برای هر کلاس، یک لیست مرتبِ «پروتکل + سطح مبهم‌سازی (noize) + فرگمنت/ECH + فقط رنج‌های آی‌پی‌ای که واقعاً جواب دادند»، از محتمل‌ترین به کم‌احتمال، به‌علاوه یک تلاش نهاییِ کامل به‌عنوان آخرین راه.
-  - **اتصال گام‌به‌گام** — هر راهبرد یک اتصال واقعی می‌گیرد که با همان تست ۴مرحله‌ای سنجیده می‌شود؛ اولین راهبردی که پاس شود برنده است و همان کانفیگ برای اتصال مجدد خودکار حفظ می‌شود.
-  - انتخاب رنج‌های زنده هر تلاش را سریع نگه می‌دارد؛ روی موبایل ایران به‌طور خودکار حداقل مبهم‌سازی سبک اعمال می‌شود؛ اگر خودتان اندپوینت/رنج دستی داده باشید هرگز بازنویسی نمی‌شود؛ و تمام تصمیم‌ها و نتایج پراب‌ها در بخش لاگ نوشته می‌شود تا کاملاً شفاف باشد چرا «هوشمند» چه چیزی را انتخاب کرده. وضعیت جدید «در حال تحلیل شبکه (اتصال هوشمند)…» هم به UI اضافه شد.
-- **«متصل» یعنی واقعاً متصل** — برنامه در وضعیت جدید «در حال بررسی سلامت اتصال…» می‌ماند تا هر ۴ تیک سبز (پورت، هندشیک، اینترنت، آی‌پی) پاس شوند؛ دیگر خبری از «متصل»ی که هنوز هیچ سایتی با آن باز نمی‌شود نیست.
-- **آی‌پی و پرچم خیلی سریع‌تر ظاهر می‌شوند** — هر ۳ سرویس تشخیص آی‌پی حالا **هم‌زمان (موازی)** صدا زده می‌شوند و سریع‌ترینِ آن‌ها در شبکهٔ *شما* برنده است؛ تست‌های سلامت هم موازی شده و فاصله‌های تلاش مجدد کوتاه‌تر شده‌اند. مخصوصاً برای شبکه‌هایی که DPI بعضی سرویس‌ها را کند می‌کند فرق بزرگی است.
-- **رفع به‌هم‌ریختگی اعداد هنگام تایپ** در فیلد رنج آی‌پی و اندپوینت دستی (و هر جایی که `ip:port` نمایش داده می‌شود) وقتی زبان گوشی فارسی است — مشکل از الگوریتم راست‌به‌چپ متن بود و ریشه‌ای حل شد.
-- **دکمهٔ بازنشانی جدید** در انتهای تنظیمات پیشرفته — با یک لمس همهٔ تنظیمات به پیش‌فرض برمی‌گردد.
-- **تقویت امنیتی** (گزارش کامل در `docs/SECURITY_AUDIT.md`): تأیید نام هاست در اتصال‌های TLS (بستن راه حملهٔ MitM)، حذف خروجی موتور از Logcat در نسخهٔ نهایی، مسدودشدن HTTP ناامن در کل برنامه، سخت‌گیرانه‌ترشدن قوانین بکاپ.
-- **آپدیت داخلی مثل تلگرام (بتا)** — از این به بعد وقتی نسخهٔ جدیدی در گیت‌هاب منتشر شود، خود برنامه در صفحهٔ اصلی خبر می‌دهد و با زدن دکمهٔ «آپدیت»، فایل مناسب گوشی دانلود و نصب می‌شود؛ دیگر لازم نیست به گیت‌هاب سر بزنید. **این قابلیت فعلاً در حالت بتا و آزمایشی است.**
-- **امضای درست نسخهٔ نهایی (بتا)** — همهٔ بیلدها با یک کلید ثابت امضا می‌شوند (کلید CI داخل مخزن، یا کلید خودتان با `keystore.properties`/Secrets؛ `docs/SIGNING.md` را ببینید) تا آپدیت‌ها همیشه بدون حذف نصب شوند. اگر نسخهٔ فعلی‌تان با کلید *دیگری* امضا شده بود، فقط یک‌بار حذف/نصب کنید — از آن به بعد دائمی است. **مکانیزم امضا هم فعلاً در حالت بتا و آزمایشی است.**
+مدیریت نسخهٔ هسته به خط‌لولهٔ بیلد منتقل شد، به‌روزرسانی درون‌برنامه‌ای حذف شد، بخش انتخاب کشور حذف شد و انتخاب اندپوینت به خود هسته سپرده شد و مشکلات عملکردی و سازگاری نسخهٔ ۱.۲.۱ از ریشه رفع گردید.
 
-## Downloads
+**⚡ این نسخه را مستقیماً روی ۱.۲.۱ نصب کنید — بدون حذف برنامه و با حفظ تمام تنظیمات.**
 
-| File | Device |
-| --- | --- |
-| `*-arm64-v8a.apk` | Most modern phones (recommended) |
-| `*-armeabi-v7a.apk` | Older 32-bit devices |
-| `*-universal.apk` | Works on both (larger file) |
+### 🔄 ارتقای خودکار هسته در CI
+- در هر بیلد، مخزن رسمی هسته بررسی و در صورت وجود نسخهٔ جدیدتر، هسته به‌صورت خودکار ارتقا می‌یابد (مرجع پایدار: **۱.۴**).
+- پچ‌های اختصاصی برنامه حفظ می‌شوند و در صورت تعارض، هشدار صریح صادر می‌شود.
+- اگر گیت‌هاب در دسترس نباشد، بیلد با همان هستهٔ موجود ادامه می‌دهد.
+- پس از ارتقا، CI خودش بخش تغییرات ردمی را ویرایش و کامیت می‌کند؛ نسخهٔ هسته در بخش «درباره» قابل مشاهده است.
+
+### 🗑️ حذف سیستم به‌روزرسانی درون‌برنامه‌ای
+> به منظور ارتقای امنیت کاربران، شفاف‌سازی کامل و اطمینان از اصالت کدهای دریافتی، قابلیت به‌روزرسانی مستقیم درون‌برنامه‌ای حذف گردید. از این پس تمامی به‌روزرسانی‌ها صرفاً از طریق صفحه رسمی انتشار (Release) در گیت‌هاب پروژه به صورت امضاشده و رسمی قابل دریافت خواهند بود تا از هرگونه دانلود ناخواسته از منابع ناشناس جلوگیری شود.
+
+ماژول بررسی به‌روزرسانی، کارت نصب درون‌برنامه، مجوز `REQUEST_INSTALL_PACKAGES` و `FileProvider` کاملاً حذف شدند. **برنامه دیگر توانایی دانلود یا نصب هیچ فایلی را ندارد.**
+
+### 🌐 بدون لیست سرور و لوکیشن — انتخاب اندپوینت برعهدهٔ خود هسته
+
+این برنامه نه لیست کشور دارد و نه لیست سرور؛ واقعاً هم هیچ‌وقت نداشته است. شما را به **شبکهٔ WARP کلاودفلر** وصل می‌کند که آدرس‌هایش **anycast** هستند: یک آدرس یکسان هم‌زمان از همهٔ دیتاسنترهای کلاودفلر در دنیا اعلام می‌شود و اینکه کدام دیتاسنتر جواب بدهد را مسیریابی اپراتور شما تعیین می‌کند، نه برنامه. پس منوی انتخاب کشور فقط یک برچسب بود و عملاً شما را به آن کشور نمی‌برد؛ به همین دلیل در این نسخه کاملاً حذف شد.
+
+- **هسته خودش اندپوینت را انتخاب می‌کند.** رنج‌های داخلی WARP را اسکن و اندازه‌گیری می‌کند و به بهترین لبه‌ای که در آن لحظه روی شبکهٔ شما جواب بدهد وصل می‌شود.
+- **Smart Auto کار اصلی خودش را انجام می‌دهد:** تشخیص وضعیت DPI شبکه و انتخاب پروتکل و مبهم‌سازی مناسب.
+- **تنظیمات دستی شما همچنان اولویت دارد.** اندپوینت دستی (`ip:port`) یا رنج اختصاصی در تنظیمات، دقیقاً مانند گذشته اسکن را پین می‌کند و quick-reconnect هم عادی کار می‌کند.
+- **بدون فیلتر اجباری آی‌پی.** اجباری‌کردن خروجی غیرایرانی هم در عمل جواب نمی‌دهد؛ نسخهٔ آزمایشی «هرگز ایران» روی شبکهٔ واقعی ایران تقریباً همهٔ لبه‌ها را رد می‌کرد و برنامه تا شکست نهایی در حلقه می‌ماند، پس حذف شد. اولویت با پایداری اتصال است.
+
+### ⚡ پایداری، منابع و امضا
+- **رفع نشت حافظه**: بافر حلقوی ۸۰۰ خطی، به‌روزرسانی UI محدودشده، نوشتن دسته‌ای در پس‌زمینه و فایل لاگ چرخشی ۵۱۲ کیلوبایتی.
+- **کاهش چشمگیر مصرف CPU**: ناظر سرویس به‌جای پویش هر دو ثانیه، روی خود پروسهٔ هسته بلاک می‌شود.
+- حذف انتظار فعال پس از اتصال، استخر نخ مشترک برای پراب‌ها و پویش پورت تطبیقی.
+- **رفع تداخل با v2rayNG**: پورت‌های اشتراک‌گذاری از ۱۰۸۰۸/۱۰۸۰۹ به **۱۰۸۱۰/۱۰۸۱۱** منتقل شد و همسایه‌های شناخته‌شده در پیام خطا نام‌برده می‌شوند.
+- **حل ریشه‌ای مشکل امضا**: CI اثر انگشت SHA-256 امضاکننده را پین می‌کند و در صورت تغییر، بیلد را متوقف می‌کند؛ بنابراین نصب روی ۱.۲.۱ تضمین شده است.
+
+- **جابه‌جایی بین پروتکل‌ها دیگر برنامه را معطل نمی‌کند.** قطع اتصال و سپس اتصال روی پروتکلی دیگر (روی همهٔ پروتکل‌ها به‌جز اسمارت) این حس را می‌داد که «خیلی دیر راه می‌افتد». دو اشکال واقعی باعثش بود. اول اینکه توقف هسته «بفرست و فراموش کن» بود: برنامه فقط سیگنال خاتمه را می‌فرستاد و بلافاصله جلو می‌رفت، بنابراین هستهٔ قبلی اغلب هنوز زنده بود و پورت محلی <span dir="ltr">`127.0.0.1:1819`</span> را در اختیار داشت در حالی که هستهٔ بعدی داشت اجرا می‌شد؛ تلاش جدید یا نمی‌توانست پورت را بگیرد یا خودش را روی سوکتِ در حال مرگ راستی‌آزمایی می‌کرد و مجبور به تایم‌اوت و تلاش دوباره می‌شد. اکنون واقعاً منتظر خاتمهٔ پروسه می‌مانیم (و در صورت نیاز آن را به‌اجبار می‌بندیم) و تلاش تازه پیش از شروع، منتظر آزاد شدن پورت محلی می‌ماند. دوم اینکه اگر دکمهٔ اتصال در حالی زده می‌شد که نشست قبلی هنوز کاملاً جمع نشده بود، آن درخواست **بی‌صدا دور انداخته می‌شد** («یک اجرا فعال است ← خروج») و این دقیقاً همان حالت «زدم کانکت ولی مدتی هیچ اتفاقی نیفتاد» است؛ حالا نشست جدید کنترل را به دست می‌گیرد، منتظر پایان نشست قبلی می‌ماند، آن را برمی‌چیند و بی‌درنگ شروع می‌کند.
+- **مسک (و هر پروتکلی که دستی انتخاب شود) یک فرصت دوم واقعی می‌گیرد.** پروتکلی که کاربر دستی انتخاب می‌کرد فقط **یک** تلاش داشت، آن هم با کل بودجهٔ اسکنِ حالت انتخاب‌شده — تا ۱۵۰ ثانیه در Balanced و ۳۰۰ ثانیه در Thorough — و هیچ جایگزینی نداشت؛ در حالی که حالت اسمارت یک نردبان از تلاش‌های کوتاه و مقاوم‌شده را طی می‌کند. روی شبکه‌ای که UDP/QUIC را محدود می‌کند، نتیجه این بود که کاربر دقایقی روی «در حال اتصال» می‌ماند و بعد شکست می‌خورد. حالا پروتکل انتخابی ابتدا یک پاس با سقف زمانی و دقیقاً با تنظیمات خودتان اجرا می‌شود و اگر موفق نشد، **همان پروتکل** یک بار دیگر با مقاوم‌سازی ضد DPI (روشن‌کردن مبهم‌سازی، و برای مسک: HTTP/2 و قطعه‌قطعه‌سازی TLS و ECH) با بودجهٔ کامل تکرار می‌شود. پروتکلی که انتخاب کرده‌اید هرگز با پروتکل دیگری عوض نمی‌شود.
+- **قطع اتصال دوباره فوری شد (رفع ریشه‌ای معطلی ۳۰ تا ۵۰ ثانیه‌ای).** با زدن دکمهٔ قطع، دکمه روی «در حال قطع…» تا یک دقیقه روی همهٔ پروتکل‌ها می‌ماند. ریشهٔ مشکل: ناطر سرویس روی پروسهٔ هسته با <span dir="ltr">`Process.waitFor`</span> پارک می‌شود که یک فراخوانی **مسدودکننده** جاواست و لغو کردن کوروتین نمی‌تواند آن را قطع کند. مسیر خاموشی اول از نشست می‌خواست تمام شود و *منتطر پایان آن می‌ماند پیش از اینکه چیزی را بکشد*؛ پس تا پایان کل پنجرهٔ ۶۰ ثانیه‌ای در همان انتطار می‌ماند (در لاگ، توقف هسته دقیقاً ۶۰ ثانیه پس از اتصال ثبت شده، نه لحطه‌ای که دکمه زده شد). دو اصلاح این را برای همیشه حل کرد: انتطار برای هسته اکنون قابل وقفه است و در حد میلی‌ثانیه لغو می‌شود، و ترتیب خاموشی معکوس شد: لغو، بلافاصله کشتن هسته و تونل، رفتن فوری رابط کاربری به حالت بی‌کار، و فقط *پس از آن* جمع‌کردن کوروتین تمام‌شده در پس‌زمینه. اتصال مجدد روی پروتکلی دیگر هم از همین ترتیب پیروی می‌کند، پس دیگر انتطار نشست قبلی را به ارث نمی‌برد. توقف هسته نیز بعد از ۲۵۰ میلی‌ثانیه به کشتن قطعی می‌رسد به‌جای چند ثانیه انتطار.
+- **انیمیشن شفق حذف شد؛ پس‌زمینه اکنون یک رنگ ساده و ساکن است.** سه گرادیان شعاعی بزرگ، تا وقتی \برنامه باز بود، تمام‌صفحه پشت همهٔ صفحه‌ها ترکیب می‌شدند و حتی با کاهش نرخ ترسیم هم هنوز سهم قابل‌توجهی از GPU و CPU را می‌گرفتند. اکنون پس‌زمینه یک پرِ رنگی ساکن است که هرگز بازترسیم نمی‌شود — دیگر هیچ انیمیشنی پشت رابط کاربری اجرا نمی‌شود و کل بودجهٔ فریم در اختیار منوها، شیت‌ها و صفحهٔ اتصال است.
+- **منوی اصلی وقتی بسته است دیگر کار نمی‌کند.** کشوی ناوبری اندروید محتوای خود را حتی در حالت بسته هم می‌سازد؛ بنابراین کارت‌های تشخیص، اشتراک‌گذاری، تنظیمات پیشرفته و درباره همیشه زنده بودند و با هر تغییر تنظیمات و هر خط لاگ هسته دوباره ساخته می‌شدند، آن هم پشت پنلی که کسی نگاهش نمی‌کرد. اکنون فقط زمانی ساخته می‌شوند که کشو واقعاً باز باشد.
+- **لاگ تشخیصی فقط وقتی باز است گوش می‌دهد.** هسته هنگام اسکن صدها خط لاگ تولید می‌کند؛ پیش‌تر هر خط، کل کارت تشخیص — و کشوی اطرافش — را بازسازی می‌کرد، حتی وقتی کنسول لاگ بسته بود. حالا فقط کنسول بازشده مشترک لاگ است.
+- **شیت «تنظیمات پیشرفته» فوری باز می‌شود.** حدود ۴۰ کنترل این بخش در همان فریمی چیده می‌شدند که انیمیشن باز شدن شیت شروع می‌شد و همین باعث لگ محسوس در باز شدن بود. اکنون ابتدا شیت باز می‌شود و بلافاصله بعد، محتوا داخلش قرار می‌گیرد.
+
+### 🔒 ممیزی امنیتی
+این پروژه برای نسخهٔ ۱.۲.۲ تحت **ممیزی امنیتی ۱۰۰ درصدی و خط‌به‌خط** قرار گرفت و آسیب‌پذیری‌های بحرانی بر اساس استانداردهای ممیزی موبایل رفع شدند. گزارش کامل: `docs/SECURITY_AUDIT_1.2.2.md`
+
+</div>

@@ -34,11 +34,55 @@ object PortProbe {
         isEngineAlive: () -> Boolean = { true },
     ): Boolean {
         val deadline = System.currentTimeMillis() + totalTimeoutMs
+        // 1.2.2 CPU FIX: the poll is now adaptive instead of a flat 300 ms for
+        // the entire window. The engine either opens its port within the first
+        // few seconds (fast path — keep the tight interval so we notice
+        // immediately) or it is doing a long endpoint scan that can run for
+        // MINUTES. In THOROUGH/IRONCLAD mode the old fixed interval meant up to
+        // ~1,200 wake-ups + socket syscalls per connect attempt, all of it pure
+        // overhead on the exact code path where the CPU is already busy
+        // scanning. Backing off to [MAX_INTERVAL_MS] cuts that by roughly an
+        // order of magnitude while costing at most one extra second of
+        // detection latency on a slow connect.
+        var interval = intervalMs
+        val fastPhaseEnd = System.currentTimeMillis() + FAST_PHASE_MS
         while (System.currentTimeMillis() < deadline) {
             if (isOpen(host, port)) return true
             if (!isEngineAlive()) return false
-            delay(intervalMs)
+            delay(interval)
+            if (System.currentTimeMillis() > fastPhaseEnd && interval < MAX_INTERVAL_MS) {
+                interval = (interval * 3 / 2).coerceAtMost(MAX_INTERVAL_MS)
+            }
         }
         return false
     }
+
+    /**
+     * Waits until nothing is listening on [port] any more.
+     *
+     * 1.2.2 PROTOCOL-SWITCH FIX: a new engine must never be started while the
+     * previous one still owns the local SOCKS5 port, otherwise the connect
+     * either races a dying listener or verifies against it. Polls at a very
+     * cheap 100 ms because a released localhost port is what the user is
+     * waiting for.
+     */
+    suspend fun awaitClosed(
+        host: String,
+        port: Int,
+        totalTimeoutMs: Long,
+        intervalMs: Long = 100,
+    ): Boolean {
+        val deadline = System.currentTimeMillis() + totalTimeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!isOpen(host, port, timeoutMs = 250)) return true
+            delay(intervalMs)
+        }
+        return !isOpen(host, port, timeoutMs = 250)
+    }
+
+    /** Keep polling tightly for this long, then back off. */
+    private const val FAST_PHASE_MS = 5_000L
+
+    /** Upper bound for the adaptive poll interval. */
+    private const val MAX_INTERVAL_MS = 1_500L
 }

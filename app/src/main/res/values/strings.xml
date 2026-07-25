@@ -154,16 +154,17 @@
     <string name="state_verifying">Verifying connection…</string>
     <string name="state_analyzing">Analyzing your network (Smart mode)…</string>
     <string name="err_auto_failed">Smart mode tried every strategy, but none could connect on this network. Try picking a protocol manually.</string>
+    <string name="err_protocol_failed">This protocol could not connect on this network, even with obfuscation. Try Smart mode or another protocol.</string>
     <string name="err_selftest">Tunnel started, but the end-to-end self-test failed. Please try again.</string>
     <string name="section_reset">Reset</string>
     <string name="reset_settings">Reset all settings to defaults</string>
     <string name="reset_done">Settings restored to defaults</string>
 
     <!-- In-app updater (v1.2.1) -->
-    <string name="update_available">Version %1$s is available</string>
-    <string name="update_action">Update</string>
-    <string name="update_downloading">Downloading update\u2026 %1$d%%</string>
-    <string name="update_failed">Update download failed. Please try again.</string>
-    <string name="update_allow_install">Allow Aether to install updates, then tap Update again.</string>
-    <string name="update_dismiss">Later</string>
+    <!-- 1.2.2: the in-app updater strings (update_available/update_action/
+         update_downloading/update_failed/update_allow_install/update_dismiss)
+         were removed together with the updater itself. Updates now come only
+         from the officially signed GitHub Release page. -->
+
+
 </resources>

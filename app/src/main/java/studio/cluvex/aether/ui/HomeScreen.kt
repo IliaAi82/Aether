@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,7 +54,6 @@ import studio.cluvex.aether.ui.components.ConnectionMeta
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
 import studio.cluvex.aether.ui.components.StatusLine
 import studio.cluvex.aether.ui.components.TrafficPanel
-import studio.cluvex.aether.ui.components.UpdatePrompt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,6 +82,12 @@ fun HomeScreen(
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
+    // 1.2.2 UI-SPEED FIX: ModalNavigationDrawer composes its drawer content
+    // even while the drawer is CLOSED, so the diagnostics, share, advanced and
+    // about cards were live at all times — recomposing on every profile change
+    // and on every log line, behind a panel nobody was looking at. They are now
+    // only composed while the drawer is open or opening.
+    val drawerVisible = drawerState.isOpen || drawerState.targetValue == DrawerValue.Open
 
     // Advanced settings, reachable directly from the home screen (top-right).
     var showAdvancedSheet by remember { mutableStateOf(false) }
@@ -115,27 +121,29 @@ fun HomeScreen(
 
                     Spacer(Modifier.height(20.dp))
 
-                    DiagnosticsPanel()
+                    if (drawerVisible) {
+                        DiagnosticsPanel()
 
-                    Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(16.dp))
 
-                    SharePanel(
-                        state = state,
-                        profile = profile,
-                        onProfileChange = onProfileChange,
-                    )
+                        SharePanel(
+                            state = state,
+                            profile = profile,
+                            onProfileChange = onProfileChange,
+                        )
 
-                    Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(16.dp))
 
-                    AdvancedPanel(
-                        profile = profile,
-                        onProfileChange = onProfileChange,
-                        enabled = settingsEnabled,
-                    )
+                        AdvancedPanel(
+                            profile = profile,
+                            onProfileChange = onProfileChange,
+                            enabled = settingsEnabled,
+                        )
 
-                    Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(16.dp))
 
-                    AboutPanel()
+                        AboutPanel()
+                    }
                 }
             }
         },
@@ -163,11 +171,7 @@ fun HomeScreen(
                     textAlign = TextAlign.Center,
                 )
 
-                // Telegram-style update banner: renders only when a newer
-                // release exists on GitHub Releases.
-                UpdatePrompt(modifier = Modifier.padding(top = 16.dp))
-
-                Spacer(Modifier.height(48.dp))
+                Spacer(Modifier.height(28.dp))
 
                 ConnectButton(mode = mode, onClick = onToggleConnection)
 
@@ -244,12 +248,23 @@ fun HomeScreen(
                     .navigationBarsPadding()
                     .padding(bottom = 32.dp),
             ) {
-                AdvancedPanel(
-                    profile = profile,
-                    onProfileChange = onProfileChange,
-                    enabled = settingsEnabled,
-                    startExpanded = true,
-                )
+                // 1.2.2 UI-SPEED FIX: the advanced card is ~40 controls tall and
+                // used to be composed in the SAME frame the sheet starts its
+                // slide-in animation, so the sheet visibly stuttered on open.
+                // The first frame now shows the empty sheet (instant) and the
+                // controls are composed immediately afterwards.
+                var sheetReady by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) { sheetReady = true }
+                if (sheetReady) {
+                    AdvancedPanel(
+                        profile = profile,
+                        onProfileChange = onProfileChange,
+                        enabled = settingsEnabled,
+                        startExpanded = true,
+                    )
+                } else {
+                    Spacer(Modifier.height(320.dp))
+                }
             }
         }
     }

@@ -38,18 +38,47 @@ import kotlin.concurrent.thread
 object ShareBridge {
 
     /**
-     * FIXED local proxy ports — the same de-facto standard v2rayNG made
-     * universal (10808 = SOCKS5, 10809 = HTTP). These NEVER change at runtime:
-     * users type them once into another app (Psiphon, Telegram, a browser)
-     * and the address keeps working across every reconnect.
+     * FIXED local proxy ports. These NEVER change at runtime: users type them
+     * once into another app (Psiphon, Telegram, a browser) and the address
+     * keeps working across every reconnect.
      *
-     * 1080/8118 were abandoned on purpose: other proxy tools (Psiphon itself
-     * defaults to 1080, Privoxy owns 8118, …) commonly hold them, which caused
-     * the EADDRINUSE bind failures seen in field logs. 10808/10809 are the
-     * community-standard "local proxy" ports and are practically always free.
+     * ### Why these numbers changed in 1.2.2 (v2rayNG conflict — root cause)
+     *
+     * 1.2.1 used 10808/10809. Those are not "neutral" numbers: they are
+     * **v2rayNG's own defaults** (10808 = SOCKS5, 10809 = HTTP), and Clash/
+     * NekoBox derivatives reuse them too. Any user with v2rayNG installed and
+     * running therefore hit a hard collision:
+     *
+     *  - If v2rayNG bound first, Aether's sharing/proxy mode failed with
+     *    EADDRINUSE and the user saw "could not open the proxy ports".
+     *  - If Aether bound first, v2rayNG failed to start, which is how this got
+     *    reported as "Aether breaks v2rayNG".
+     *  - Worst case, an app configured for 127.0.0.1:10808 silently sent its
+     *    traffic into whichever tunnel happened to own the port that minute —
+     *    a routing conflict with real privacy consequences.
+     *
+     * 1.2.2 moves one slot up to **10810/10811**, which sit in the same
+     * easy-to-remember block but are claimed by no mainstream client, and adds
+     * an explicit pre-bind conflict check ([describePortHolder]) so a genuine
+     * collision is reported in plain language instead of a bare stack trace.
+     *
+     * Note the engine's own SOCKS5 listener (127.0.0.1:1819, see TunnelConfig)
+     * never overlapped with v2rayNG and is unchanged.
      */
-    const val SOCKS_SHARE_PORT = 10808
-    const val HTTP_SHARE_PORT = 10809
+    const val SOCKS_SHARE_PORT = 10810
+    const val HTTP_SHARE_PORT = 10811
+
+    /**
+     * Ports owned by well-known neighbouring tunnels. Used only to produce a
+     * helpful diagnostic message — Aether never binds these.
+     */
+    private val KNOWN_NEIGHBOUR_PORTS = mapOf(
+        10808 to "v2rayNG (SOCKS5)",
+        10809 to "v2rayNG (HTTP)",
+        7890 to "Clash (mixed)",
+        1080 to "Psiphon / generic SOCKS",
+        8118 to "Privoxy",
+    )
 
     private const val TAG = "share"
     private const val MAX_HEADER_BYTES = 64 * 1024
@@ -144,6 +173,10 @@ object ShareBridge {
         // into other apps must never silently change between sessions. A short
         // retry loop absorbs a transient EADDRINUSE from a just-closed listener
         // (TIME_WAIT / async teardown); a genuinely occupied port fails loudly.
+        // 1.2.2: log which neighbouring tunnels are live BEFORE binding, so a
+        // port clash is diagnosable from the in-app log alone.
+        reportNeighbours()
+
         socksServer = bindWithRetry("SOCKS5", SOCKS_SHARE_PORT)
         httpServer = bindWithRetry("HTTP", HTTP_SHARE_PORT)
         _socksPort.value = socksServer?.localPort
@@ -229,8 +262,37 @@ object ShareBridge {
                 if (attempt < attempts - 1) Thread.sleep(delayMs)
             }
         }
-        DiagnosticsLog.e(TAG, "$label port $port is busy (held by another app?): $lastError")
+        DiagnosticsLog.e(
+            TAG,
+            "$label port $port is busy${describePortHolder(port)}: $lastError",
+        )
         return null
+    }
+
+    /** Names the usual suspect for [port], for human-readable diagnostics. */
+    private fun describePortHolder(port: Int): String =
+        KNOWN_NEIGHBOUR_PORTS[port]?.let { " — this port belongs to $it" }
+            ?: " (held by another app?)"
+
+    /**
+     * Detects other local tunnels listening on the classic proxy ports and
+     * notes them in the log. Purely informational: 1.2.2 deliberately binds
+     * ports nobody else claims, so co-existing with v2rayNG/Clash is expected
+     * to just work — this line simply proves it in the diagnostics.
+     */
+    private fun reportNeighbours() {
+        val live = KNOWN_NEIGHBOUR_PORTS.filterKeys { port ->
+            runCatching {
+                Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 120) }
+                true
+            }.getOrDefault(false)
+        }.values.distinct()
+        if (live.isEmpty()) return
+        DiagnosticsLog.i(
+            TAG,
+            "Other local proxies detected (${live.joinToString(", ")}) — Aether uses " +
+                "$SOCKS_SHARE_PORT/$HTTP_SHARE_PORT, so they can run side by side.",
+        )
     }
 
     private fun closeServers() {

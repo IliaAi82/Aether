@@ -8,6 +8,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -155,7 +157,14 @@ object NetProbe {
         val remaining = AtomicInteger(GEO_PROVIDERS.size)
         val done = CountDownLatch(1)
         for (p in GEO_PROVIDERS) {
-            thread(isDaemon = true, name = "geo-race-${p.host}") {
+            // 1.2.2 CPU/MEMORY FIX: run the race on a SHARED, recycled pool
+            // instead of spawning brand-new OS threads on every call. This
+            // function runs on connect, on every reconnect and on each IP
+            // refresh; each invocation used to create one raw thread per
+            // provider (each with its own stack) that was then thrown away.
+            // A cached pool reuses those workers, so repeated refreshes stop
+            // churning thread stacks and the GC.
+            geoPool.execute {
                 val info = runCatching {
                     socks5Connect(socksHost, socksPort, p.host, p.port, useDomain = p.hostIsDomain, timeoutMs).use { s ->
                         val io = if (p.tls) tlsWrap(s, p.host, p.port, timeoutMs) else s
@@ -179,6 +188,22 @@ object NetProbe {
         done.await(timeoutMs.toLong() + 4_000L, TimeUnit.MILLISECONDS)
         return winner.get()
     }
+
+    /**
+     * Shared worker pool for the geolocation race (see
+     * [fetchIpInfoViaSocksRaced]). Threads are daemons and idle ones are
+     * reclaimed after 30 s, so the pool costs nothing while disconnected.
+     */
+    private val geoPool = Executors.newCachedThreadPool(
+        object : ThreadFactory {
+            private val counter = AtomicInteger(0)
+            override fun newThread(r: Runnable): Thread =
+                Thread(r, "geo-race-${counter.incrementAndGet()}").apply {
+                    isDaemon = true
+                    priority = Thread.NORM_PRIORITY - 1
+                }
+        },
+    )
 
     /** Wraps an already-connected socket in TLS (SNI = [host]). */
     private fun tlsWrap(socket: Socket, host: String, port: Int, timeoutMs: Int): Socket {
@@ -398,7 +423,7 @@ object NetProbe {
 
     private fun parseIpInfo(response: String): IpInfo? {
         val body = response.substringAfter("\r\n\r\n", "")
-        // Format 1: ip-api.com JSON  {"query":"1.2.3.4","countryCode":"DE"}
+        // Format 1: ip-api.com JSON  {"query":"1.2.2.4","countryCode":"DE"}
         val ip = Regex("\"query\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
         if (ip != null) {
             val cc = Regex("\"countryCode\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)

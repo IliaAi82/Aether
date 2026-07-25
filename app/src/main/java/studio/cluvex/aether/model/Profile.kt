@@ -1,5 +1,6 @@
 package studio.cluvex.aether.model
 
+
 /** Transport protocol, mapped 1:1 to the desktop app's CLI flags. */
 enum class Protocol { AUTO, MASQUE, WIREGUARD, GOOL }
 
@@ -19,9 +20,12 @@ enum class Noize { OFF, LIGHT, FIREWALL, BALANCED, GFW, AGGRESSIVE }
 
 /**
  * Where the engine gets its endpoint from:
- *  - AUTO         : engine scans its built-in Cloudflare ranges (default).
+ *  - AUTO         : engine scans the clean (non-Iranian) WARP edge ranges.
  *  - MANUAL_PEER  : user pins one endpoint `ip:port`; the engine skips scanning.
  *  - MANUAL_RANGE : user types their own IP range(s); the engine scans ONLY those.
+ *
+ * Whatever is chosen here, the exit is still verified end-to-end before the
+ * session is accepted.
  */
 enum class EndpointMode { AUTO, MANUAL_PEER, MANUAL_RANGE }
 
@@ -55,8 +59,9 @@ data class ConnectionProfile(
     val manualPeer: String = "",
     /**
      * Comma-separated IP range(s) used when [endpointMode] is MANUAL_RANGE,
-     * e.g. "8.6.112.x" or "104.16.0.0/16, 188.114.96.0/24". The engine scans
-     * exactly these ranges (see AETHER_SCAN_CIDRS in prober.rs).
+     * e.g. "8.6.112.x" or "188.114.96.0/24, 162.159.192.0/24". The engine
+     * scans exactly these ranges (see AETHER_SCAN_CIDRS in prober.rs), minus
+     * anything the no-Iran filter rejects.
      */
     val manualRange: String = "",
     /** WireGuard persistent keepalive, seconds. 0 = engine default (5). */
@@ -80,7 +85,12 @@ data class ConnectionProfile(
     val splitMode: SplitMode = SplitMode.OFF,
     /** Package names the split policy applies to. */
     val splitApps: List<String> = emptyList(),
+
 ) {
+    /** True when the user pinned one specific gateway by hand. */
+    val hasManualPeer: Boolean
+        get() = endpointMode == EndpointMode.MANUAL_PEER && manualPeer.isNotBlank()
+
     /** Command-line arguments passed to the `aether` engine binary. */
     fun toArgs(): List<String> {
         val args = mutableListOf<String>()
@@ -96,7 +106,6 @@ data class ConnectionProfile(
         }
 
         // A pinned peer makes scan mode irrelevant, so only emit it otherwise.
-        val hasManualPeer = endpointMode == EndpointMode.MANUAL_PEER && manualPeer.isNotBlank()
         if (!hasManualPeer) {
             when (scanMode) {
                 ScanMode.TURBO -> args += "--turbo"
@@ -137,9 +146,19 @@ data class ConnectionProfile(
     /** Environment variables for the engine process. */
     fun toEnv(): Map<String, String> = buildMap {
         put("AETHER_MASQUE_HTTP2", if (masqueHttp2) "1" else "0")
-        // Manual range mode: the engine scans exactly these ranges.
-        if (endpointMode == EndpointMode.MANUAL_RANGE && manualRange.isNotBlank()) {
-            put("AETHER_SCAN_CIDRS", manualRange.trim())
+
+        // Which addresses the engine's scanner may consider.
+        //
+        // Only what the user pinned in Settings. With nothing pinned the
+        // engine uses its own built-in WARP ranges and picks an endpoint
+        // itself, which is the natural behaviour of the core.
+        val userRange = manualRange.trim()
+        if (endpointMode == EndpointMode.MANUAL_RANGE && userRange.isNotBlank()) {
+            // prober.rs reads AETHER_MASQUE_CIDRS then AETHER_SCAN_CIDRS;
+            // wg_prober.rs reads AETHER_WG_CIDRS then AETHER_SCAN_CIDRS.
+            put("AETHER_SCAN_CIDRS", userRange)
+            put("AETHER_MASQUE_CIDRS", userRange)
+            put("AETHER_WG_CIDRS", userRange)
         }
     }
 
@@ -150,7 +169,7 @@ data class ConnectionProfile(
      * legitimately scanning. A pinned peer connects almost immediately.
      */
     fun connectTimeoutMs(): Long {
-        if (endpointMode == EndpointMode.MANUAL_PEER && manualPeer.isNotBlank()) return 45_000L
+        if (hasManualPeer) return 45_000L
         return when (scanMode) {
             ScanMode.TURBO -> 60_000L
             ScanMode.BALANCED -> 150_000L

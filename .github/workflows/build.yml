@@ -46,19 +46,94 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
+      # This repo intentionally ships no gradle-wrapper.jar, so the build runs
+      # with the Gradle that is on PATH. Leaving that to the runner image is a
+      # time bomb: GitHub keeps bumping its preinstalled Gradle, and AGP 8.7.2
+      # only supports the 8.x line (Gradle 9 fails the build outright with an
+      # "unsupported" / plugin-compatibility error). Pin the exact version the
+      # wrapper descriptor already declares so the toolchain can never drift.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Show build toolchain
+        run: |
+          gradle --version
+          java -version 2>&1
+
+      # 1.2.2: the BUILD owns the engine version, not a human. Every build
+      # checks the official core repo and upgrades the vendored engine when a
+      # newer release exists, preserving this app's own engine patches. The
+      # script also appends the upgrade to the 1.2.2 changelog in both READMEs.
+      - name: Sync Aether core (auto-upgrade engine)
+        run: bash scripts/sync-core.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AETHER_REPO: CluvexStudio/Aether
 
       - name: Fetch native sources
         run: bash scripts/fetch-natives.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AETHER_REF: ${{ github.event_name == 'workflow_dispatch' && '' || '' }}
 
       - name: Build tunnel core (hev)
         run: bash scripts/build-natives.sh hev
 
+      # The engine build is the one step an automatic core upgrade can break:
+      # upstream may add a struct field or a function parameter at any time and
+      # no textual merge can guarantee the result still compiles (core 1.4.0
+      # did exactly that: E0063 on H2TunnelConfig, E0061 on
+      # wireguard::verify_endpoint_keep_session). A convenience feature must
+      # never be able to fail a release, so this step is allowed to fail once:
+      # it rolls the core back to the version the repo already shipped, rebuilds
+      # and continues. Only a failure that is NOT caused by the auto-upgrade can
+      # stop the pipeline here.
       - name: Build engine (Aether)
-        run: bash scripts/build-natives.sh aether
+        run: |
+          set -uo pipefail
+          if bash scripts/build-natives.sh aether; then
+            exit 0
+          fi
+          echo "::warning::Engine build failed with the freshly synced core."
+          if [ ! -d native/.core-prev/aether ]; then
+            echo "::error::Engine build failed and there is no core upgrade to blame - this is a real build error."
+            exit 1
+          fi
+          bash scripts/core-rollback.sh
+          bash scripts/fetch-natives.sh
+          set -e
+          bash scripts/build-natives.sh aether
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # If the core moved AND the engine actually built with it, commit the new
+      # CORE_VERSION, the refreshed upstream baseline and the auto-written
+      # changelog lines back to the branch, so the repository always documents
+      # exactly which engine was shipped. Running this AFTER the build is what
+      # keeps the repo from recording an upgrade that does not compile.
+      # Never runs on tag builds.
+      - name: Commit core upgrade + README changelog
+        if: github.ref_type == 'branch'
+        run: |
+          set -euo pipefail
+          if [ ! -f native/.core-sync-state ]; then
+            echo "No core upgrade to record (already current, or it was rolled back)."
+            exit 0
+          fi
+          if [ -z "$(git status --porcelain native/aether README.md README.fa.md)" ]; then
+            echo "Core already up to date - nothing to commit."
+            exit 0
+          fi
+          CORE_V="$(tr -d '[:space:]' < native/aether/CORE_VERSION)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add native/aether README.md README.fa.md
+          git commit -m "ci: auto-upgrade Aether core to v${CORE_V} + document in 1.2.2 changelog [skip ci]"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}" \
+            || echo "WARNING: could not push the core upgrade back to the branch."
 
       # Signing: ALWAYS sign with a STABLE key so users can update in place
       # (Android only installs an update when old and new APKs share the same
@@ -78,17 +153,34 @@ jobs:
           SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          # AUTHORITATIVE KEY (this is the 1.2.1 release key). When the four
+          # signing secrets are configured in the repository, the APK is signed
+          # with EXACTLY the same certificate as 1.2.1, so 1.2.1 users can
+          # install 1.2.2 straight over their existing app. Only in this mode
+          # is the fingerprint pinned and enforced.
           if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "Using the user-provided keystore from repository Secrets."
+            echo "Using the user-provided release keystore from repository Secrets."
             echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
             {
               echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore"
               echo "KEYSTORE_PASSWORD=${SECRET_KEYSTORE_PASSWORD}"
               echo "KEY_ALIAS=${SECRET_KEY_ALIAS}"
               echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD}"
+              echo "AETHER_SIGNING_MODE=release"
             } >> "$GITHUB_ENV"
             exit 0
           fi
+
+          # TEST KEY. No signing secrets in this repository, so we fall back to
+          # a throwaway CI certificate. APKs signed this way are for TESTING
+          # ONLY: they can never be installed over an app signed with the real
+          # key. Nothing about this key is pinned or enforced, so building the
+          # project in a scratch repository can NEVER poison the over-install
+          # guarantee of the real release repository.
+          echo "::warning::No signing secrets found - building with a TEST certificate."
+          echo "::warning::This APK cannot be installed over an existing 1.2.1 install."
+          echo "::warning::Add KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD to sign with the real 1.2.1 key."
+          echo "AETHER_SIGNING_MODE=test" >> "$GITHUB_ENV"
 
           KS="${RUNNER_TEMP}/ci-release.keystore"
           if [ -f .github/ci-keystore.jks.b64 ]; then
@@ -106,6 +198,9 @@ jobs:
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add .github/ci-keystore.jks.b64
               git commit -m "ci: persist auto-generated signing keystore [skip ci]"
+              # An earlier step in this same run may already have pushed the
+              # core upgrade, so rebase before pushing instead of racing it.
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
               git push origin "HEAD:${GITHUB_REF_NAME}" \
                 || echo "WARNING: could not push the keystore back; the next build may sign with a different key."
             else
@@ -121,6 +216,10 @@ jobs:
 
       - name: Build release APKs
         run: gradle :app:assembleRelease --no-daemon --stacktrace
+        env:
+          # Kotlin/Compose compilation of the new location picker needs more
+          # heap than the 1 GB Gradle default on the hosted runners.
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8"
 
       # PLAY-PROTECT SAFEGUARD: never publish an APK that is unsigned or
       # debug-signed. Throwaway debug certificates (a different one on every
@@ -141,9 +240,102 @@ jobs:
             if grep -qi "CN=Android Debug" /tmp/sig.txt; then
               echo "ERROR: $apk is signed with a DEBUG certificate — refusing to publish"; exit 1
             fi
+
+            # 1.2.2 OVER-INSTALL GUARANTEE: Android refuses to update an
+            # installed app when the new APK is signed by a different
+            # certificate (INSTALL_FAILED_UPDATE_INCOMPATIBLE), which is what
+            # forced 1.2.1 users to uninstall first and lose their settings.
+            # We pin the expected signer fingerprint: if a build ever produces
+            # a different certificate than the one 1.2.1 shipped with, the
+            # build FAILS here instead of shipping an APK users cannot install
+            # on top of their current version.
+            # Robust fingerprint extraction. The previous pattern required an
+            # exact "Signer #1 certificate SHA-256 digest: " prefix and matched
+            # nothing on this runner, so an EMPTY fingerprint was pinned and the
+            # whole over-install guarantee silently became a no-op. Now we grab
+            # the first 64-hex digest on any SHA-256 line, fall back to keytool,
+            # and HARD FAIL if we still cannot determine it.
+            SHA="$(tr -d '\r' < /tmp/sig.txt \
+              | sed -n 's/.*SHA-256 digest:[[:space:]]*\([0-9a-fA-F]\{64\}\).*/\1/p' \
+              | head -n1 | tr 'A-F' 'a-f')"
+            if [ -z "$SHA" ]; then
+              SHA="$(keytool -printcert -jarfile "$apk" 2>/dev/null \
+                | tr -d '\r' \
+                | sed -n 's/.*SHA-?256:[[:space:]]*\([0-9A-Fa-f:]\{95,\}\).*/\1/p' \
+                | head -n1 | tr -d ':' | tr 'A-F' 'a-f')"
+            fi
+            if ! printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "ERROR: could not extract the signer SHA-256 fingerprint from $apk."
+              echo "Refusing to continue: an empty fingerprint would disable the"
+              echo "over-install protection that keeps users from having to uninstall."
+              sed -n '1,40p' /tmp/sig.txt
+              exit 1
+            fi
+            echo "Signer SHA-256: ${SHA}"
+            # In TEST signing mode the certificate is a throwaway one, so it is
+            # meaningless to compare or record it. We only report it.
+            if [ "${AETHER_SIGNING_MODE:-test}" != "release" ]; then
+              echo "TEST signing mode: signer pinning skipped (throwaway certificate)."
+              echo "Signature OK (test key): $apk"
+              continue
+            fi
+
+            if [ -f .github/expected-signer.txt ] \
+               && grep -Eq '^[0-9a-fA-F]{64}$' .github/expected-signer.txt; then
+              EXPECTED="$(grep -Eo '^[0-9a-fA-F]{64}$' .github/expected-signer.txt | tr 'A-F' 'a-f' | head -n1)"
+              if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$SHA" ]; then
+                echo "ERROR: signer certificate changed!"
+                echo "  expected: ${EXPECTED}"
+                echo "  actual:   ${SHA}"
+                echo "Users could NOT over-install on top of 1.2.1. Refusing to publish."
+                exit 1
+              fi
+              echo "Signer matches the pinned certificate - 1.2.1 users can over-install."
+            else
+              echo "${SHA}" > /tmp/expected-signer.txt
+              echo "NOTE: no pinned signer yet; recording this fingerprint."
+            fi
             echo "Signature OK: $apk"
           done
           [ "$found" -eq 1 ] || { echo "ERROR: no release APKs found to verify"; exit 1; }
+
+      # Persist the signer fingerprint on the first build so every later build
+      # is checked against it automatically.
+      - name: Pin signer fingerprint (first build only)
+        if: github.ref_type == 'branch'
+        run: |
+          set -euo pipefail
+          [ -f /tmp/expected-signer.txt ] || exit 0
+          # Only the REAL release key (from repository Secrets) may ever be
+          # pinned. A throwaway CI/test certificate must never be written into
+          # the repository, otherwise building this project in a scratch
+          # repository would break the over-install guarantee of the real
+          # 1.2.1 release repository later on.
+          if [ "${AETHER_SIGNING_MODE:-test}" != "release" ]; then
+            echo "TEST signing mode: not pinning a throwaway certificate."
+            exit 0
+          fi
+          # A previous build committed an EMPTY fingerprint file, which made the
+          # pin check pass unconditionally. Treat a file without a valid 64-hex
+          # value as "not pinned yet" and rewrite it.
+          if [ -f .github/expected-signer.txt ] \
+             && grep -Eq '^[0-9a-fA-F]{64}$' .github/expected-signer.txt; then
+            exit 0
+          fi
+          {
+            echo "# SHA-256 of the certificate that signs every Aether release."
+            echo "# Recorded automatically on the first 1.2.2 build. Do not edit by hand:"
+            echo "# if this value changes, users of 1.2.1 can no longer install an update"
+            echo "# over their current app (they would have to uninstall and lose settings)."
+            cat /tmp/expected-signer.txt
+          } > .github/expected-signer.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/expected-signer.txt
+          git commit -m "ci: pin release signer fingerprint for over-install compatibility [skip ci]"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}" \
+            || echo "WARNING: could not push the pinned signer fingerprint."
 
       # Do not publish an APK that can only run proxy mode. Full VPN mode needs
       # both native cores for every ABI contained in that APK.
@@ -169,7 +361,11 @@ jobs:
 
       - name: Collect and rename APKs
         run: |
-          VERSION_NAME="$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"
+          set -euo pipefail
+          # Match the assignment specifically: a stray comment mentioning
+          # "versionName" must not be able to rename every published artifact.
+          VERSION_NAME="$(grep -m1 -E '^[[:space:]]*versionName[[:space:]]*=' app/build.gradle.kts | sed -E 's/.*"([^"]+)".*/\1/')"
+          [ -n "$VERSION_NAME" ] || { echo "ERROR: could not read versionName"; exit 1; }
           echo "VERSION_NAME=${VERSION_NAME}" >> "$GITHUB_ENV"
           OUT=artifacts
           mkdir -p "$OUT"

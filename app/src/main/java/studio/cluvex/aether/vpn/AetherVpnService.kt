@@ -20,6 +20,7 @@ import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.AetherProcess
 import studio.cluvex.aether.core.Diagnostics
 import studio.cluvex.aether.core.DiagnosticsLog
+import studio.cluvex.aether.core.AutoCandidate
 import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.ProfileCodec
 import studio.cluvex.aether.core.HevTunnel
@@ -28,6 +29,7 @@ import studio.cluvex.aether.core.SmartAuto
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
+import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.SplitMode
 import java.io.File
@@ -49,6 +51,13 @@ class AetherVpnService : VpnService() {
     private var tunnelStarted: Boolean = false
     private var runJob: Job? = null
 
+    /**
+     * The teardown coroutine of the PREVIOUS session, if one is still
+     * finishing. A new connect waits for it instead of racing it (1.2.2
+     * protocol-switch fix).
+     */
+    private var stopJob: Job? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
@@ -65,8 +74,27 @@ class AetherVpnService : VpnService() {
     }
 
     private fun startTunnel(profile: ConnectionProfile) {
-        if (runJob?.isActive == true) return
+        // 1.2.2 PROTOCOL-SWITCH FIX: this used to bail out silently whenever a
+        // previous run coroutine was still winding down ("if active, return"),
+        // so a connect tapped right after a disconnect — or right after
+        // switching protocol — was simply DROPPED. The user then waited,
+        // tapped again, and the app looked like it took forever to start.
+        // Now the new session takes ownership: it waits for the old one to
+        // finish, tears its natives down, and only then launches the engine.
+        val previousRun = runJob
+        val previousStop = stopJob
         runJob = scope.launch {
+            if (previousRun != null) {
+                // Same ordering rule as the disconnect path: cancel, kill the
+                // natives (which unblocks the old session immediately), and
+                // only then wait for it to finish. Joining first would stall
+                // the new connect for as long as the old session's engine wait
+                // still had to run.
+                previousRun.cancel()
+                cleanupNativeOnly()
+                previousRun.join()
+            }
+            previousStop?.join()
             try {
                 connectFlow(profile)
             } catch (e: CancellationException) {
@@ -96,8 +124,10 @@ class AetherVpnService : VpnService() {
             if (profile.protocol == Protocol.AUTO) {
                 connectSmartAuto(profile)
             } else {
-                connectAttempt(profile, profile.connectTimeoutMs())
-                profile
+                // An explicitly chosen protocol keeps that protocol; the
+                // engine still selects its own endpoint (see [directPlan]).
+                AetherController.setState(ConnectionState.Launching)
+                runLadder(directPlan(profile), getString(R.string.err_protocol_failed))
             }
 
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
@@ -120,12 +150,71 @@ class AetherVpnService : VpnService() {
         updateNotification(getString(R.string.state_analyzing))
         val fingerprint = SmartAuto.fingerprint(this)
         val plan = SmartAuto.buildPlan(userProfile, fingerprint)
+        return runLadder(plan, getString(R.string.err_auto_failed))
+    }
+
+    /**
+     * Two-pass plan for a protocol the user picked by hand (MASQUE, WireGuard
+     * or Gool).
+     *
+     * 1.2.2 "MASQUE hangs forever" FIX: a hand-picked protocol used to get ONE
+     * attempt with the full scan budget of the selected scan mode — up to 150 s
+     * on Balanced and 300 s on Thorough — with no second chance. On a network
+     * where QUIC/UDP is throttled that means the user stares at "Connecting"
+     * for minutes and then just fails, while Smart mode (which walks a ladder
+     * of shorter, hardened attempts) connects in seconds. So the chosen
+     * protocol now gets:
+     *   1. a first pass exactly as configured, on a capped budget, and
+     *   2. if that fails, the SAME protocol again with anti-DPI hardening
+     *      (obfuscation on, plus HTTP/2 + TLS fragmentation + ECH for MASQUE)
+     *      on the full budget.
+     * The protocol the user chose is never swapped for another one.
+     */
+    private fun directPlan(profile: ConnectionProfile): List<AutoCandidate> {
+        val fullBudget = profile.connectTimeoutMs()
+        val hardenedNoize = if (profile.noize == Noize.OFF) Noize.FIREWALL else profile.noize
+        val masque = profile.protocol == Protocol.MASQUE
+        val hardened = profile.copy(
+            noize = hardenedNoize,
+            masqueHttp2 = profile.masqueHttp2 || masque,
+            fragment = profile.fragment || masque,
+            ech = profile.ech || masque,
+        )
+        if (hardened == profile) {
+            return listOf(
+                AutoCandidate(profile, fullBudget, "${profile.protocol.name} · as configured"),
+            )
+        }
+        return listOf(
+            AutoCandidate(
+                profile,
+                fullBudget.coerceAtMost(FIRST_PASS_MAX_MS),
+                "${profile.protocol.name} · as configured",
+            ),
+            AutoCandidate(
+                hardened,
+                fullBudget,
+                "${profile.protocol.name} · noize=${hardenedNoize.name.lowercase()}" +
+                    (if (masque) " · h2 · fragment · ech" else "") + " (anti-DPI pass)",
+            ),
+        )
+    }
+
+    /**
+     * Walks a ladder of strategies until one comes up and passes the full
+     * self-test. Each failed rung is torn down before the next is tried.
+     */
+    private suspend fun runLadder(
+        plan: List<AutoCandidate>,
+        failureMessage: String,
+    ): ConnectionProfile {
         var lastError: Exception? = null
+
         plan.forEachIndexed { index, candidate ->
-            DiagnosticsLog.i(TAG, "Smart mode: attempt ${index + 1}/${plan.size} → ${candidate.label}")
+            DiagnosticsLog.i(TAG, "Attempt ${index + 1}/${plan.size} → ${candidate.label}")
             try {
                 connectAttempt(candidate.profile, candidate.timeoutMs)
-                DiagnosticsLog.i(TAG, "Smart mode: connected using ${candidate.label}")
+                DiagnosticsLog.i(TAG, "Connected using ${candidate.label}")
                 return candidate.profile
             } catch (e: CancellationException) {
                 throw e
@@ -133,13 +222,14 @@ class AetherVpnService : VpnService() {
                 lastError = e
                 DiagnosticsLog.w(
                     TAG,
-                    "Smart mode: ${candidate.label} failed (${e.message}) — moving to the next strategy.",
+                    "${candidate.label} failed (${e.message}) — moving to the next strategy.",
                 )
                 cleanupNativeOnly()
                 Diagnostics.resetChecks()
             }
         }
-        throw IllegalStateException(getString(R.string.err_auto_failed), lastError)
+
+        throw IllegalStateException(failureMessage, lastError)
     }
 
     /**
@@ -147,9 +237,24 @@ class AetherVpnService : VpnService() {
      * for SOCKS5, bring up TUN/proxy, and gate on the 4-step self-test.
      * Throws on any failure; the caller decides whether to retry differently.
      */
-    private suspend fun connectAttempt(profile: ConnectionProfile, timeoutMs: Long) {
+    private suspend fun connectAttempt(
+        profile: ConnectionProfile,
+        timeoutMs: Long,
+    ) {
         AetherController.setState(ConnectionState.Launching)
         updateNotification(getString(R.string.state_launching))
+        // 1.2.2 PROTOCOL-SWITCH FIX: never start an engine on top of a dying
+        // one. Tear the previous natives down and wait for the local SOCKS5
+        // port to be released first, otherwise the probe below can "see" the
+        // old listener and the whole attempt is verified against a socket that
+        // is about to disappear.
+        cleanupNativeOnly()
+        if (!PortProbe.awaitClosed(SOCKS_HOST, SOCKS_PORT, PORT_RELEASE_WAIT_MS)) {
+            DiagnosticsLog.w(
+                TAG,
+                "Local port $SOCKS_PORT is still busy after ${PORT_RELEASE_WAIT_MS / 1000}s — starting anyway.",
+            )
+        }
         DiagnosticsLog.i(TAG, "Launching engine (libaether.so)…")
         engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile) }
 
@@ -230,6 +335,18 @@ class AetherVpnService : VpnService() {
             DiagnosticsLog.e(TAG, "Self-test failed — refusing to report Connected.")
             throw IllegalStateException(getString(R.string.err_selftest))
         }
+
+        // Informational only: report where the tunnel actually came out.
+        // WARP edges are anycast, so the exit location is decided by the
+        // engine's endpoint selection and the operator's routing, not by the
+        // app. Nothing here can reject or override that choice.
+        val exit = AetherController.ipInfo.value?.takeIf { it.viaTunnel }
+        if (exit != null) {
+            DiagnosticsLog.i(
+                TAG,
+                "Exit verified through the tunnel: ${exit.ip} (${exit.countryCode ?: "??"})",
+            )
+        }
     }
 
     /** Keeps the engine alive; retries with backoff if it dies. */
@@ -238,7 +355,15 @@ class AetherVpnService : VpnService() {
         while (currentScopeActive()) {
             if (engine?.isAlive() == true) {
                 attempt = 0
-                delay(2000)
+                // 1.2.2 CPU FIX: the supervisor used to wake up every 2 s for
+                // the ENTIRE lifetime of the tunnel just to ask "is the engine
+                // still alive?" — 1,800 wake-ups per hour of a healthy,
+                // otherwise idle connection, each one preventing the CPU from
+                // settling into a deep idle state and quietly draining the
+                // battery. Instead we now BLOCK on the process itself: the OS
+                // wakes us the instant the engine exits and never before, so a
+                // healthy tunnel costs exactly zero polling.
+                engine?.awaitExit(SUPERVISOR_WAIT_MS)
                 continue
             }
 
@@ -395,8 +520,20 @@ class AetherVpnService : VpnService() {
     private fun stopEverything() {
         AetherController.setState(ConnectionState.Disconnecting)
         updateNotification(getString(R.string.state_disconnecting))
-        runJob?.cancel()
-        scope.launch {
+        val job = runJob
+        runJob = null
+        // DISCONNECT MUST BE INSTANT. Order matters:
+        //   1. cancel the session coroutine (does not wait for it),
+        //   2. kill the natives right away — this is what actually makes the
+        //      tunnel stop, and it also unblocks any wait the session
+        //      coroutine is parked in,
+        //   3. flip the UI to Idle and drop the foreground notification,
+        //   4. only THEN join the finished coroutine, off the critical path.
+        // The previous order (join → cleanup) made the button sit on
+        // "Disconnecting…" for as long as the supervisor's engine wait had
+        // left to run — up to a full minute.
+        job?.cancel()
+        stopJob = scope.launch(Dispatchers.IO) {
             cleanupNativeOnly()
             // STALE-CIRCLES FIX (part 2): clear the finished session's results
             // right at disconnect, so the panel never carries green circles
@@ -406,6 +543,7 @@ class AetherVpnService : VpnService() {
             AetherTileService.requestUpdate(this@AetherVpnService)
             stopForegroundCompat()
             stopSelf()
+            job?.join()
         }
     }
 
@@ -499,5 +637,25 @@ class AetherVpnService : VpnService() {
         private const val MTU = TunnelConfig.MTU
         private const val MAX_RETRIES = 3
         private val BACKOFF = longArrayOf(2000L, 5000L, 10000L)
+
+        /**
+         * Upper bound for one blocking wait on the engine process (1.2.2).
+         * The supervisor no longer polls; it parks on the process itself and
+         * only wakes up this often to re-check its own cancellation state.
+         */
+        private const val SUPERVISOR_WAIT_MS = 60_000L
+
+        /**
+         * How long to wait for the previous engine to release the local SOCKS5
+         * port before starting a new one (1.2.2 protocol-switch fix).
+         */
+        private const val PORT_RELEASE_WAIT_MS = 3_000L
+
+        /**
+         * Cap for the FIRST attempt of a hand-picked protocol, so a throttled
+         * network cannot hold the user on "Connecting" for the whole scan
+         * budget before the hardened second pass is even tried.
+         */
+        private const val FIRST_PASS_MAX_MS = 75_000L
     }
 }

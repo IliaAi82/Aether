@@ -6,9 +6,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- In-app updater: lets the app hand a downloaded APK to the system
-         installer (the user still confirms every install). -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!--
+      1.2.2 SECURITY: REQUEST_INSTALL_PACKAGES was REMOVED together with the
+      in-app updater. The app can no longer download or hand an APK to the
+      system package installer, so there is no runtime code-delivery path at
+      all. Updates come exclusively from the officially signed GitHub Release
+      page. This also drops the most over-privileged permission in the
+      previous manifest.
+    -->
 
     <!-- Split tunneling needs to list the device's launchable apps so the user
          can pick which apps to include/exclude from the tunnel. We only query
@@ -68,17 +73,11 @@
             </intent-filter>
         </service>
 
-        <!-- In-app updater: serves the downloaded APK from the app cache to
-             the system package installer (see core/UpdateChecker.kt). -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
+        <!--
+          1.2.2: the FileProvider that exported downloaded APKs to the system
+          installer was removed along with the in-app updater. The app now
+          exports no content provider whatsoever.
+        -->
 
     </application>
 </manifest>

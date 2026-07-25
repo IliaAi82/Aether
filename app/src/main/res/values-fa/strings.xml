@@ -154,16 +154,16 @@
     <string name="state_verifying">در حال بررسی سلامت اتصال…</string>
     <string name="state_analyzing">در حال تحلیل شبکه (اتصال هوشمند)…</string>
     <string name="err_auto_failed">اتصال هوشمند همهٔ راهبردها را امتحان کرد اما هیچ‌کدام روی این شبکه متصل نشد. یک پروتکل را دستی انتخاب کنید.</string>
+    <string name="err_protocol_failed">این پروتکل حتی با مبهم‌سازی هم روی این شبکه متصل نشد. حالت هوشمند یا پروتکل دیگری را امتحان کنید.</string>
     <string name="err_selftest">تونل برقرار شد اما تست انتهابهانتها ناموفق بود. دوباره تلاش کنید.</string>
     <string name="section_reset">بازنشانی</string>
     <string name="reset_settings">بازگرداندن همهٔ تنظیمات به پیش‌فرض</string>
     <string name="reset_done">تنظیمات به حالت اولیه برگشت</string>
 
     <!-- آپدیت داخل برنامه (v1.2.1) -->
-    <string name="update_available">نسخهٔ جدید %1$s آماده است</string>
-    <string name="update_action">آپدیت</string>
-    <string name="update_downloading">در حال دانلود آپدیت… %1$d%%</string>
-    <string name="update_failed">دانلود آپدیت ناموفق بود. دوباره تلاش کنید.</string>
-    <string name="update_allow_install">اجازهٔ نصب آپدیت به Aether را فعال کنید و دوباره «آپدیت» را بزنید.</string>
-    <string name="update_dismiss">بعداً</string>
+    <!-- ۱.۲.۲: رشته‌های به‌روزرسانی درون‌برنامه‌ای همراه با خود ماژول حذف شدند.
+         از این پس به‌روزرسانی فقط از صفحهٔ رسمی و امضاشدهٔ Release در گیت‌هاب. -->
+
+    <!-- انتخاب لوکیشن (جدید در ۱.۲.۲) -->
+
 </resources>

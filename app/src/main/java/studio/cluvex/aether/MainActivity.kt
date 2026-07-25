@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.conflate
@@ -138,11 +139,16 @@ class MainActivity : ComponentActivity() {
                             // a last-resort fallback (guarded by
                             // offerTunnelIpInfo, so it can never overwrite).
                             AetherController.setIpLoading(true)
-                            val deadline = System.currentTimeMillis() + 100_000L
-                            while (AetherController.ipInfo.value?.viaTunnel != true &&
-                                System.currentTimeMillis() < deadline
-                            ) {
-                                delay(250L)
+                            // 1.2.2 CPU FIX: this used to busy-poll a StateFlow
+                            // every 250 ms for up to 100 s — as many as 400
+                            // pointless wake-ups on the UI dispatcher right
+                            // after connecting, exactly when the device is
+                            // already busy. StateFlow is observable, so we now
+                            // SUSPEND until the value we are waiting for
+                            // actually arrives (zero wake-ups in between) and
+                            // simply bound that wait with a timeout.
+                            withTimeoutOrNull(100_000L) {
+                                AetherController.ipInfo.first { it?.viaTunnel == true }
                             }
                             if (AetherController.ipInfo.value?.viaTunnel != true) {
                                 val info = withContext(Dispatchers.IO) {

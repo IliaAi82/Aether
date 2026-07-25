@@ -68,20 +68,30 @@ android {
         applicationId = "studio.cluvex.aether"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.2.1"
+        versionCode = 6
+        versionName = "1.2.2"
 
         ndk {
             // We ship arm64 (primary) and arm builds.
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
-        // "owner/repo" used by the in-app updater to query GitHub Releases.
-        // CI provides GITHUB_REPOSITORY automatically; local builds can pass
-        // -PgithubRepo=owner/repo (the updater is silently disabled when empty).
+        // 1.2.2: the in-app updater (APK download + system installer handoff)
+        // was REMOVED. The app no longer downloads executable code at runtime
+        // from anywhere. What remains is a read-only pointer to the official,
+        // signed GitHub Releases page that the About card can open in the
+        // browser -- no network call, no download, no installer intent.
         val githubRepo = System.getenv("GITHUB_REPOSITORY")
             ?: (project.findProperty("githubRepo") as? String ?: "")
-        buildConfigField("String", "GITHUB_REPO", "\"$githubRepo\"")
+        val releasesUrl =
+            if (githubRepo.isNotBlank()) "https://github.com/$githubRepo/releases/latest" else ""
+        buildConfigField("String", "RELEASES_URL", "\"$releasesUrl\"")
+
+        // Aether engine (core) version compiled into this build. CI keeps this
+        // in sync with native/aether/CORE_VERSION via scripts/sync-core.sh.
+        val coreVersion = rootProject.file("native/aether/CORE_VERSION")
+            .takeIf { it.exists() }?.readText()?.trim().orEmpty().ifBlank { "unknown" }
+        buildConfigField("String", "CORE_VERSION", "\"$coreVersion\"")
     }
 
     // Both native cores (libhev-socks5-tunnel.so + libaether.so) are prebuilt by

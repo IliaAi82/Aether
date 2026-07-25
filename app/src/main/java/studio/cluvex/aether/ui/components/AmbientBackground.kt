@@ -1,26 +1,26 @@
 package studio.cluvex.aether.ui.components
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
- * Slowly drifting aurora blobs behind the whole screen. Brightens when a
- * connection is active for a subtle, premium feel.
+ * The app backdrop: a single, flat, static colour.
+ *
+ * 1.2.2 UI-SPEED FIX (final): this used to be an animated "aurora" — three
+ * large radial-gradient blobs drifting across a full-screen Canvas. Even after
+ * the redraw rate was capped it still rebuilt and repainted full-screen
+ * gradients continuously behind every screen, for as long as the app was open,
+ * which is what made the whole UI feel heavy and laggy on real devices. The
+ * animation and the gradients are gone: the background is now a plain colour
+ * that costs exactly one fill and never invalidates. Nothing animates behind
+ * the UI any more, so every frame budget belongs to the UI itself.
+ *
+ * The parameters are kept so callers stay unchanged; they no longer affect the
+ * backdrop.
  */
 @Composable
 fun AmbientBackground(
@@ -28,53 +28,8 @@ fun AmbientBackground(
     active: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val transition = rememberInfiniteTransition(label = "ambient")
-    val t by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * Math.PI).toFloat(),
-        animationSpec = infiniteRepeatable(tween(14000, easing = LinearEasing)),
-        label = "drift",
-    )
-    val intensity by animateFloatAsState(
-        targetValue = if (active) 0.75f else 0.35f,
-        animationSpec = tween(1200),
-        label = "intensity",
-    )
-
-    Canvas(modifier = modifier.fillMaxSize().background(Color(0xFF0A0E1A))) {
-        val w = size.width
-        val h = size.height
-
-        val c1 = Offset(w * (0.30f + 0.18f * cos(t)), h * (0.24f + 0.10f * sin(t)))
-        val c2 = Offset(w * (0.72f + 0.15f * sin(t * 0.8f)), h * (0.70f + 0.12f * cos(t * 0.6f)))
-        val c3 = Offset(w * (0.50f + 0.20f * cos(t * 0.5f)), h * (0.90f + 0.06f * sin(t)))
-
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(accent.copy(alpha = 0.35f * intensity), Color.Transparent),
-                center = c1,
-                radius = w * 0.85f,
-            ),
-            radius = w * 0.85f,
-            center = c1,
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF32E0C4).copy(alpha = 0.22f * intensity), Color.Transparent),
-                center = c2,
-                radius = w * 0.70f,
-            ),
-            radius = w * 0.70f,
-            center = c2,
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(Color(0xFF7C4DFF).copy(alpha = 0.18f * intensity), Color.Transparent),
-                center = c3,
-                radius = w * 0.60f,
-            ),
-            radius = w * 0.60f,
-            center = c3,
-        )
-    }
+    Box(modifier = modifier.fillMaxSize().background(BACKDROP))
 }
+
+/** The flat app background colour. */
+private val BACKDROP = Color(0xFF0A0E1A)
