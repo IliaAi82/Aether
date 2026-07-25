@@ -129,8 +129,7 @@ pub struct WgProbe {
 }
 
 pub async fn hunt_best_wg_endpoint(probe: &WgProbe, mode: WgScanMode) -> Result<WgProbeResult> {
-    let mut st = mode.strategy();
-    st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
+    let st = mode.strategy();
     let timeout = st.per_probe_timeout;
     let mut effective_ip = probe.ip;
     if probe.ip.want_v6() && !crate::prober::host_has_ipv6().await {
@@ -257,13 +256,12 @@ async fn verify_one_wg(
         probe.local_ipv4,
         &probe.aethernoize,
         timeout,
-        None,
     )
     .await
     {
         Ok(v) => v,
         Err(e) => {
-            log::trace!("wg probe {ip}:{port} -> {e}");
+            log::debug!("wg probe {ip}:{port} -> {e}");
             return None;
         }
     };
@@ -286,9 +284,31 @@ async fn verify_one_wg(
             Some(WgProbeResult { ip, port, rtt: http_rtt })
         }
         Err(e) => {
-            log::trace!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
+            log::debug!("[-] ironclad wg {ip}:{port} failed real http check: {e}");
             None
         }
+    }
+}
+
+/// Custom IPv4 scan ranges forced by the app (manual range mode) for WireGuard.
+/// Reads AETHER_WG_CIDRS first, then the shared AETHER_SCAN_CIDRS.
+fn custom_wg_cidrs_v4() -> Option<Vec<String>> {
+    let raw = std::env::var("AETHER_WG_CIDRS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AETHER_SCAN_CIDRS")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })?;
+    let list: Vec<String> = raw
+        .split(',')
+        .filter_map(crate::prober::normalize_cidr_v4)
+        .collect();
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
     }
 }
 
@@ -303,16 +323,25 @@ fn build_wg_candidates(st: &WgStrategy, ports: &[u16], ip: IpScan) -> Vec<(IpAdd
         }
     };
 
+    // Manual range mode: scan exactly the user-provided ranges and skip seeds.
+    let custom_v4 = custom_wg_cidrs_v4();
+    let wg_v4_cidrs: Vec<String> = match &custom_v4 {
+        Some(list) => list.clone(),
+        None => wireguard::WG_PREFIXES_V4.iter().map(|s| s.to_string()).collect(),
+    };
+
     let mut anchors: Vec<IpAddr> = Vec::new();
     let mut pool: Vec<IpAddr> = Vec::new();
 
     if ip.want_v4() {
-        for s in wireguard::WG_SEEDS_V4 {
-            if let Ok(a) = s.parse::<Ipv4Addr>() {
-                anchors.push(IpAddr::V4(a));
+        if custom_v4.is_none() {
+            for s in wireguard::WG_SEEDS_V4 {
+                if let Ok(a) = s.parse::<Ipv4Addr>() {
+                    anchors.push(IpAddr::V4(a));
+                }
             }
         }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = wireguard::WG_PREFIXES_V4
+        let cidr_hosts: Vec<Vec<Ipv4Addr>> = wg_v4_cidrs
             .iter()
             .map(|c| {
                 if st.full_subnet {

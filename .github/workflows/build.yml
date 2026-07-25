@@ -187,6 +187,18 @@ jobs:
             echo "Reusing the persisted CI keystore (same signature as previous builds)."
             base64 -d .github/ci-keystore.jks.b64 > "$KS"
           else
+            # OVER-INSTALL GUARD: if this repository has already published
+            # releases signed with a persisted CI key, its fingerprint was
+            # recorded in .github/expected-signer-ci.txt. Minting a brand new
+            # key here would silently produce an APK that existing users can
+            # NOT install over their current app, so stop instead.
+            if [ -f .github/expected-signer-ci.txt ]; then
+              echo "::error::.github/ci-keystore.jks.b64 is missing but this repo already published with a persisted CI key."
+              echo "::error::Restore .github/ci-keystore.jks.b64 (it is the key that signed the previous release),"
+              echo "::error::or add the KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD secrets."
+              echo "::error::Building now would produce an APK that users could not install over their current version."
+              exit 1
+            fi
             echo "First build: generating a CI keystore and persisting it to the repo."
             keytool -genkeypair -v -keystore "$KS" \
               -storepass aether-ci-keystore -keypass aether-ci-keystore \
@@ -213,6 +225,36 @@ jobs:
             echo "KEY_ALIAS=aether-ci"
             echo "KEY_PASSWORD=aether-ci-keystore"
           } >> "$GITHUB_ENV"
+
+      # ROOT FIX for "it builds in a fresh repo but fails in the real one":
+      # copying 1.2.2 on top of a 1.2.1 checkout overwrites changed files but
+      # cannot delete the files 1.2.2 REMOVED (the in-app updater, the location
+      # picker, the forced-exit policy). Those orphans still reference symbols
+      # and string resources that no longer exist, so compileReleaseKotlin died
+      # with "Unresolved reference 'GITHUB_REPO' / 'update_available' / ...".
+      # The build now deletes them itself (and hard-fails early on any other
+      # stale string reference), so a leftover file can never break a release.
+      - name: Purge stale sources from older versions
+        run: bash scripts/purge-stale-sources.sh
+
+      # Keep the repository itself clean, so the next build starts from a tree
+      # that no longer contains the orphans. Best-effort: a failed push must
+      # never fail a release.
+      - name: Commit stale-source purge
+        if: github.ref_type == 'branch'
+        run: |
+          set -uo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to commit - the tree was already clean."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: remove sources deleted in 1.2.2 that were left over from 1.2.1 [skip ci]" || exit 0
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}" \
+            || echo "WARNING: could not push the purge commit; the next build will purge again."
 
       - name: Build release APKs
         run: gradle :app:assembleRelease --no-daemon --stacktrace
@@ -275,7 +317,30 @@ jobs:
             # In TEST signing mode the certificate is a throwaway one, so it is
             # meaningless to compare or record it. We only report it.
             if [ "${AETHER_SIGNING_MODE:-test}" != "release" ]; then
-              echo "TEST signing mode: signer pinning skipped (throwaway certificate)."
+              # The CI key is a throwaway one, but it is the SAME throwaway key
+              # on every build of this repository (it lives in
+              # .github/ci-keystore.jks.b64), and 1.2.1 was published with it.
+              # So its fingerprint still decides whether users can update in
+              # place. Pin it PER REPOSITORY: if it ever changes, fail here
+              # instead of publishing an APK that cannot be installed over the
+              # previous version. A scratch repository pins its own value and
+              # can never affect the real one.
+              if [ -f .github/expected-signer-ci.txt ] \
+                 && grep -Eq '^[0-9a-fA-F]{64}$' .github/expected-signer-ci.txt; then
+                EXPECTED_CI="$(grep -Eo '^[0-9a-fA-F]{64}$' .github/expected-signer-ci.txt | tr 'A-F' 'a-f' | head -n1)"
+                if [ "$EXPECTED_CI" != "$SHA" ]; then
+                  echo "ERROR: the CI signing certificate changed!"
+                  echo "  expected: ${EXPECTED_CI}"
+                  echo "  actual:   ${SHA}"
+                  echo "Users of the previous release could NOT install this update over it."
+                  echo "Restore .github/ci-keystore.jks.b64 from the previous release commit."
+                  exit 1
+                fi
+                echo "CI signer matches the previous release - users can update in place."
+              else
+                echo "${SHA}" > /tmp/expected-signer-ci.txt
+                echo "NOTE: recording this CI signer fingerprint for future builds."
+              fi
               echo "Signature OK (test key): $apk"
               continue
             fi
@@ -336,6 +401,33 @@ jobs:
           git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
           git push origin "HEAD:${GITHUB_REF_NAME}" \
             || echo "WARNING: could not push the pinned signer fingerprint."
+
+      # Persist the CI signer fingerprint (test-signing mode) so every later
+      # build of THIS repository is checked against the certificate the
+      # previous release was signed with.
+      - name: Pin CI signer fingerprint
+        if: github.ref_type == 'branch'
+        run: |
+          set -euo pipefail
+          [ -f /tmp/expected-signer-ci.txt ] || exit 0
+          if [ -f .github/expected-signer-ci.txt ] \
+             && grep -Eq '^[0-9a-fA-F]{64}$' .github/expected-signer-ci.txt; then
+            exit 0
+          fi
+          {
+            echo "# SHA-256 of the CI certificate that signs this repository's APKs."
+            echo "# Recorded automatically. If this value ever changes, users cannot"
+            echo "# install a new release over the one they already have, so the build"
+            echo "# fails instead of publishing such an APK."
+            cat /tmp/expected-signer-ci.txt
+          } > .github/expected-signer-ci.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/expected-signer-ci.txt
+          git commit -m "ci: pin CI signer fingerprint for over-install compatibility [skip ci]"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}" \
+            || echo "WARNING: could not push the pinned CI signer fingerprint."
 
       # Do not publish an APK that can only run proxy mode. Full VPN mode needs
       # both native cores for every ABI contained in that APK.

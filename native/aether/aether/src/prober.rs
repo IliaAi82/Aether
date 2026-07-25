@@ -207,8 +207,7 @@ pub async fn host_has_ipv6() -> bool {
 }
 
 pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<ProbeResult> {
-    let mut st = mode.strategy();
-    st.concurrency = crate::sysprofile::cap_concurrency(st.concurrency);
+    let st = mode.strategy();
     let timeout = st.per_probe_timeout;
     let mut effective_ip = probe.ip;
     if probe.ip.want_v6() && !host_has_ipv6().await {
@@ -344,7 +343,7 @@ async fn verify_one(
                 Some(ProbeResult { ip, port, rtt })
             }
             Err(e) => {
-                log::trace!("[-] ironclad {ip}:{port} failed real http check: {e}");
+                log::debug!("[-] ironclad {ip}:{port} failed real http check: {e}");
                 None
             }
         };
@@ -360,13 +359,11 @@ async fn verify_one(
             key_pem: probe.key_pem.to_vec(),
             local_ipv4: probe.local_ipv4,
             quiet: true,
-            pin_endpoint: true,
-            expected_pins: crate::consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
         };
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
             Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
             Err(e) => {
-                log::trace!("h2 probe {ip}:{port} -> {e}");
+                log::debug!("h2 probe {ip}:{port} -> {e}");
                 None
             }
         };
@@ -388,9 +385,76 @@ async fn verify_one(
     match quic::verify_masque(&vp).await {
         Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
         Err(e) => {
-            log::trace!("probe {ip}:{port} -> {e}");
+            log::debug!("probe {ip}:{port} -> {e}");
             None
         }
+    }
+}
+
+/// Parse a user-provided scan range into a canonical IPv4 CIDR string.
+/// Accepts forms like "8.6.112.0/24", "8.6.112.x", "8.6.112.*", "8.6.112"
+/// (=> /24), "8.6.x.x" (=> /16), "8.x.x.x" (=> /8), or a bare IP (=> /32).
+pub fn normalize_cidr_v4(input: &str) -> Option<String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Some((ip, prefix)) = s.split_once('/') {
+        let ip = ip.trim().parse::<Ipv4Addr>().ok()?;
+        let p: u8 = prefix.trim().parse().ok()?;
+        if p > 32 {
+            return None;
+        }
+        return Some(format!("{ip}/{p}"));
+    }
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let mut octets = [0u8; 4];
+    let mut wild = 0u8;
+    let mut started_wild = false;
+    for i in 0..4 {
+        match parts.get(i) {
+            Some(tok) if *tok == "x" || *tok == "X" || *tok == "*" => {
+                started_wild = true;
+                octets[i] = 0;
+                wild += 1;
+            }
+            Some(tok) => {
+                if started_wild {
+                    return None;
+                }
+                octets[i] = tok.trim().parse().ok()?;
+            }
+            None => {
+                started_wild = true;
+                octets[i] = 0;
+                wild += 1;
+            }
+        }
+    }
+    let prefix = 32u8.saturating_sub(wild * 8);
+    let ip = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]);
+    Some(format!("{ip}/{prefix}"))
+}
+
+/// Custom IPv4 scan ranges forced by the app (manual range mode).
+/// Reads AETHER_MASQUE_CIDRS first, then the shared AETHER_SCAN_CIDRS.
+fn custom_cidrs_v4() -> Option<Vec<String>> {
+    let raw = std::env::var("AETHER_MASQUE_CIDRS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AETHER_SCAN_CIDRS")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })?;
+    let list: Vec<String> = raw.split(',').filter_map(normalize_cidr_v4).collect();
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
     }
 }
 
@@ -399,7 +463,18 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
     let mut out: Vec<(IpAddr, u16)> = Vec::new();
     let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
 
-    let seeds: Vec<Ipv4Addr> = MASQUE_SEEDS.iter().filter_map(|s| s.parse().ok()).collect();
+    // Manual range mode: when the app sets AETHER_MASQUE_CIDRS / AETHER_SCAN_CIDRS,
+    // scan exactly those ranges and skip the built-in Cloudflare seeds.
+    let custom_v4 = custom_cidrs_v4();
+    let v4_cidrs: Vec<String> = match &custom_v4 {
+        Some(list) => list.clone(),
+        None => MASQUE_CIDRS_V4.iter().map(|s| s.to_string()).collect(),
+    };
+    let seeds: Vec<Ipv4Addr> = if custom_v4.is_some() {
+        Vec::new()
+    } else {
+        MASQUE_SEEDS.iter().filter_map(|s| s.parse().ok()).collect()
+    };
     let seeds6: Vec<Ipv6Addr> = MASQUE_SEEDS_V6.iter().filter_map(|s| s.parse().ok()).collect();
 
     if ip.want_v4() {
@@ -408,7 +483,7 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
                 out.push((IpAddr::V4(*a), primary));
             }
         }
-        let cidr_hosts: Vec<Vec<Ipv4Addr>> = MASQUE_CIDRS_V4
+        let cidr_hosts: Vec<Vec<Ipv4Addr>> = v4_cidrs
             .iter()
             .map(|c| {
                 if st.full_subnet {
