@@ -61,11 +61,11 @@ if (useCiKeystore) {
 }
 
 android {
-    namespace = "studio.cluvex.aether"
+    namespace = "com.nebula.vpn"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "studio.cluvex.aether"
+        applicationId = "com.nebula.vpn"
         minSdk = 26
         targetSdk = 35
         versionCode = 6
