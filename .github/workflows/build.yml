@@ -51,14 +51,8 @@ jobs:
     - name: Fetch native sources
       run: bash scripts/fetch-natives.sh
 
-    - name: Build tunnel core (hev)
-      run: bash scripts/build-natives.sh hev
-
-    - name: Build engine (aether)
-      run: bash scripts/build-natives.sh aether
-
-    - name: Build tunnel bridge (aethertun)
-      run: bash scripts/build-natives.sh aethertun
+    - name: Build all native components
+      run: bash scripts/build-natives.sh all
 
     - name: Build Debug APK
       run: ./gradlew assembleDebug
