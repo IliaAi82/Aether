@@ -6,6 +6,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: "26.3.11579264"
 
     steps:
     - name: Checkout code
@@ -22,8 +24,8 @@ jobs:
 
     - name: Install NDK
       run: |
-        yes | sdkmanager "ndk;26.3.11579264" > /dev/null
-        echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/26.3.11579264" >> "$GITHUB_ENV"
+        yes | sdkmanager "ndk;${{ env.NDK_VERSION }}" > /dev/null
+        echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
 
     - name: Set up Go
       uses: actions/setup-go@v5
@@ -45,6 +47,18 @@ jobs:
 
     - name: Skip core sync
       run: echo "CORE_SYNC=off" >> $GITHUB_ENV
+
+    - name: Fetch native sources
+      run: bash scripts/fetch-natives.sh
+
+    - name: Build tunnel core (hev)
+      run: bash scripts/build-natives.sh hev
+
+    - name: Build engine (aether)
+      run: bash scripts/build-natives.sh aether
+
+    - name: Build tunnel bridge (aethertun)
+      run: bash scripts/build-natives.sh aethertun
 
     - name: Build Debug APK
       run: ./gradlew assembleDebug
