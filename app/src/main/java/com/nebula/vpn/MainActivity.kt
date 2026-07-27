@@ -33,7 +33,7 @@ import com.nebula.vpn.model.ConnectionState
 import com.nebula.vpn.model.isBusy
 import com.nebula.vpn.model.isConnected
 import com.nebula.vpn.ui.HomeScreen
-import com.nebula.vpn.ui.theme.AetherTheme
+import com.nebula.vpn.ui.theme.NebulaTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -105,7 +105,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            AetherTheme {
+            NebulaTheme {
                 val state by AetherController.state.collectAsState()
                 // Synchronous UI profile state (see uiProfile above); null
                 // only until the one-time initial load completes.

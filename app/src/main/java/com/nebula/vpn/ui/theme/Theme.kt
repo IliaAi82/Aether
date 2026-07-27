@@ -4,43 +4,48 @@ import android.app.Activity
 import android.os.Build
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// Fallback scheme: a stunning navy dark theme for devices below Android 12.
-private val AetherDarkColorScheme = darkColorScheme(
-    primary = AetherBlue,
-    onPrimary = Color.White,
-    secondary = AetherCyan,
-    onSecondary = Color(0xFF04211C),
-    tertiary = AetherCyan,
-    background = Navy900,
-    onBackground = OnDark,
-    surface = Navy800,
-    onSurface = OnDark,
-    surfaceVariant = Navy700,
-    onSurfaceVariant = OnDarkMuted,
-    error = AetherError,
-    onError = Color.White,
-    outline = Navy600,
+// Nebula dark color scheme
+private val NebulaDarkColorScheme = darkColorScheme(
+    primary = NebulaPrimary,
+    onPrimary = androidx.compose.ui.graphics.Color.White,
+    primaryContainer = NebulaPrimaryDark,
+    onPrimaryContainer = NebulaPrimaryLight,
+    secondary = NebulaAccent,
+    onSecondary = NebulaBlack,
+    secondaryContainer = androidx.compose.ui.graphics.Color(0xFF0A2E24),
+    onSecondaryContainer = NebulaAccentLight,
+    tertiary = NebulaAccent,
+    onTertiary = NebulaBlack,
+    background = NebulaBlack,
+    onBackground = NebulaOnDark,
+    surface = NebulaDark,
+    onSurface = NebulaOnDark,
+    surfaceVariant = NebulaSurface,
+    onSurfaceVariant = NebulaOnDarkMuted,
+    error = NebulaError,
+    onError = androidx.compose.ui.graphics.Color.White,
+    outline = NebulaCard,
+    outlineVariant = NebulaOnDarkDim,
 )
 
-/**
- * Material You: uses the wallpaper-derived dynamic dark palette on Android 12+,
- * and falls back to the navy scheme otherwise. Always dark by design.
- */
 @Composable
-fun AetherTheme(content: @Composable () -> Unit) {
+fun NebulaTheme(content: @Composable () -> Unit) {
     val context = LocalContext.current
     val colorScheme = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        dynamicDarkColorScheme(context)
+        // Use dynamic color on Android 12+ but override primary with our violet
+        val dynamic = androidx.compose.material3.dynamicDarkColorScheme(context)
+        dynamic.copy(
+            primary = NebulaPrimary,
+            secondary = NebulaAccent,
+        )
     } else {
-        AetherDarkColorScheme
+        NebulaDarkColorScheme
     }
 
     val view = LocalView.current
@@ -54,7 +59,7 @@ fun AetherTheme(content: @Composable () -> Unit) {
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = AetherTypography,
+        typography = NebulaTypography,
         content = content,
     )
 }
